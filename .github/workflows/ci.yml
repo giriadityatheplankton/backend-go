@@ -1,0 +1,38 @@
+name: Go Backend CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.22'
+        cache: true
+
+    - name: Install Dependencies
+      run: go mod download
+
+    - name: Run Linter
+      uses: golangci/golangci-lint-action@v3
+      with:
+        version: latest
+        args: --timeout=5m
+
+    - name: Run Unit Tests
+      run: go test -v -coverprofile=coverage.out ./...
+
+    - name: Check Test Coverage
+      run: go tool cover -func=coverage.out
+
+    - name: Build Application
+      run: go build -v -o ./bin/api ./cmd/api/main.go

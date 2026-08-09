@@ -1,0 +1,10 @@
+.git
+.github
+bin
+tmp
+.env
+.env.example
+*.md
+Makefile
+Dockerfile
+docker-compose.yml
