@@ -11,6 +11,8 @@ import (
 type Config struct {
 	ServerAddress string // HTTP server bind address (e.g., "127.0.0.1:8080")
 	AppEnv        string // Application environment (e.g., "development", "production")
+	RedisAddress  string // Redis server address (e.g., "127.0.0.1:6379")
+	NatsAddress   string // NATS server address/URL (e.g., "nats://127.0.0.1:4222")
 }
 
 // LoadConfig loads the configuration from environment variables or a .env file.
@@ -30,8 +32,20 @@ func LoadConfig() *Config {
 		appEnv = "development"
 	}
 
+	redisAddr := os.Getenv("REDIS_ADDRESS")
+	if redisAddr == "" {
+		redisAddr = "127.0.0.1:6379"
+	}
+
+	natsAddr := os.Getenv("NATS_ADDRESS")
+	if natsAddr == "" {
+		natsAddr = "nats://127.0.0.1:4222"
+	}
+
 	return &Config{
 		ServerAddress: serverAddr,
 		AppEnv:        appEnv,
+		RedisAddress:  redisAddr,
+		NatsAddress:   natsAddr,
 	}
 }
