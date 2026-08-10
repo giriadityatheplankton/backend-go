@@ -1,51 +1,60 @@
 package config
 
 import (
-	"log"
+	"log/slog"
 	"os"
+	"time"
 
 	"github.com/joho/godotenv"
 )
 
 // Config holds all configuration values for the application.
 type Config struct {
-	ServerAddress string // HTTP server bind address (e.g., "127.0.0.1:8080")
-	AppEnv        string // Application environment (e.g., "development", "production")
-	RedisAddress  string // Redis server address (e.g., "127.0.0.1:6379")
-	NatsAddress   string // NATS server address/URL (e.g., "nats://127.0.0.1:4222")
+	ServerAddress   string        // HTTP server bind address (e.g., "127.0.0.1:8080")
+	AppEnv          string        // Application environment ("development", "staging", "production")
+	RedisAddress    string        // Redis server address (e.g., "127.0.0.1:6379")
+	NatsAddress     string        // NATS server address/URL (e.g., "nats://127.0.0.1:4222")
+	ShutdownTimeout time.Duration // Graceful shutdown timeout
+	CacheTTL        time.Duration // Cache time-to-live
+	ReadTimeout     time.Duration // HTTP Server Read Timeout
+	WriteTimeout    time.Duration // HTTP Server Write Timeout
 }
 
-// LoadConfig loads the configuration from environment variables or a .env file.
+// LoadConfig loads configuration from environment variables or .env file.
 func LoadConfig() *Config {
-	// Attempt to load .env file optionally (useful for local development).
 	if err := godotenv.Load(); err != nil {
-		log.Println("Info: .env file not found, using system environment variables.")
-	}
-
-	serverAddr := os.Getenv("SERVER_ADDRESS")
-	if serverAddr == "" {
-		serverAddr = "127.0.0.1:8080" // Secure default for local development (localhost only).
-	}
-
-	appEnv := os.Getenv("APP_ENV")
-	if appEnv == "" {
-		appEnv = "development"
-	}
-
-	redisAddr := os.Getenv("REDIS_ADDRESS")
-	if redisAddr == "" {
-		redisAddr = "127.0.0.1:6379"
-	}
-
-	natsAddr := os.Getenv("NATS_ADDRESS")
-	if natsAddr == "" {
-		natsAddr = "nats://127.0.0.1:4222"
+		slog.Info(".env file not found, fallback to system environment variables")
 	}
 
 	return &Config{
-		ServerAddress: serverAddr,
-		AppEnv:        appEnv,
-		RedisAddress:  redisAddr,
-		NatsAddress:   natsAddr,
+		ServerAddress:   getEnv("SERVER_ADDRESS", "127.0.0.1:8080"),
+		AppEnv:          getEnv("APP_ENV", "development"),
+		RedisAddress:    getEnv("REDIS_ADDRESS", "127.0.0.1:6379"),
+		NatsAddress:     getEnv("NATS_ADDRESS", "nats://127.0.0.1:4222"),
+		ShutdownTimeout: getEnvAsDuration("SHUTDOWN_TIMEOUT", 10*time.Second),
+		CacheTTL:        getEnvAsDuration("CACHE_TTL", 5*time.Minute),
+		ReadTimeout:     getEnvAsDuration("READ_TIMEOUT", 10*time.Second),
+		WriteTimeout:    getEnvAsDuration("WRITE_TIMEOUT", 10*time.Second),
 	}
 }
+
+func getEnv(key, fallback string) string {
+	if val, ok := os.LookupEnv(key); ok && val != "" {
+		return val
+	}
+	return fallback
+}
+
+func getEnvAsDuration(key string, fallback time.Duration) time.Duration {
+	valStr := os.Getenv(key)
+	if valStr == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(valStr)
+	if err != nil {
+		slog.Warn("Failed to parse duration config", "key", key, "value", valStr, "fallback", fallback)
+		return fallback
+	}
+	return d
+}
+

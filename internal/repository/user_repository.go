@@ -3,105 +3,88 @@ package repository
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"backend-go/internal/domain"
 
-	"github.com/nats-io/nats.go"
 	"github.com/redis/go-redis/v9"
 )
 
 type userRepository struct {
 	redisClient *redis.Client
-	natsConn    *nats.Conn
+	cacheTTL    time.Duration
 }
 
-// NewUserRepository creates a new instance of UserRepository.
-func NewUserRepository(redisClient *redis.Client, natsConn *nats.Conn) domain.UserRepository {
+// NewUserRepository creates a new instance of domain.UserRepository.
+func NewUserRepository(redisClient *redis.Client, cacheTTL time.Duration) domain.UserRepository {
+	if cacheTTL == 0 {
+		cacheTTL = 5 * time.Minute
+	}
 	return &userRepository{
 		redisClient: redisClient,
-		natsConn:    natsConn,
+		cacheTTL:    cacheTTL,
 	}
 }
 
-// GetByID returns a User by their ID.
-func (r *userRepository) GetByID(id int) (*domain.User, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
+// GetByID returns a User by ID with Redis caching.
+func (r *userRepository) GetByID(ctx context.Context, id int) (*domain.User, error) {
 	cacheKey := fmt.Sprintf("user:%d", id)
 
-	// 1. Caching (Redis) - check cache first
+	// 1. Try fetching from Redis Cache
 	if r.redisClient != nil {
 		val, err := r.redisClient.Get(ctx, cacheKey).Result()
 		if err == nil {
 			var cachedUser domain.User
 			if err := json.Unmarshal([]byte(val), &cachedUser); err == nil {
-				log.Printf("[Redis] Cache Hit for user %d", id)
-				r.publishAccessEvent(id, cachedUser.Name, "cache")
+				slog.Info("Cache HIT", "user_id", id, "key", cacheKey)
 				return &cachedUser, nil
 			}
 		} else if err != redis.Nil {
-			log.Printf("[Redis] Error fetching cache: %v", err)
+			slog.Warn("Redis cache fetch failed, falling back to database", "user_id", id, "error", err)
 		}
 	}
 
-	log.Printf("[Redis] Cache Miss for user %d", id)
+	slog.Info("Cache MISS", "user_id", id)
 
-	// 2. Database Fallback (Simulated)
-	var user *domain.User
-	if id == 1 {
-		user = &domain.User{ID: 1, Name: "Developer", Email: "dev@example.com"}
-	} else {
-		return nil, errors.New("user not found")
+	// 2. Fetch from Database (Simulated persistence)
+	user, err := r.fetchFromDatabase(ctx, id)
+	if err != nil {
+		return nil, err
 	}
 
-	// 3. Save to Redis cache
+	// 3. Save result asynchronously to Redis cache
 	if r.redisClient != nil {
 		data, err := json.Marshal(user)
 		if err == nil {
-			err = r.redisClient.Set(ctx, cacheKey, data, 5*time.Minute).Err()
-			if err != nil {
-				log.Printf("[Redis] Failed to save cache: %v", err)
+			if setErr := r.redisClient.Set(ctx, cacheKey, data, r.cacheTTL).Err(); setErr != nil {
+				slog.Warn("Failed to save user to cache", "user_id", id, "error", setErr)
 			} else {
-				log.Printf("[Redis] Saved user %d to cache", id)
+				slog.Debug("Saved user to Redis cache", "user_id", id, "ttl", r.cacheTTL)
 			}
 		}
 	}
-
-	// 4. Pub/Sub (NATS) - publish access event
-	r.publishAccessEvent(id, user.Name, "database")
 
 	return user, nil
 }
 
-// Helper method to publish event to NATS
-func (r *userRepository) publishAccessEvent(userID int, userName string, source string) {
-	if r.natsConn == nil {
-		return
+func (r *userRepository) fetchFromDatabase(ctx context.Context, id int) (*domain.User, error) {
+	// Check for context cancellation before executing DB operation
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
 	}
 
-	event := map[string]interface{}{
-		"user_id":     userID,
-		"user_name":   userName,
-		"accessed_at": time.Now().Format(time.RFC3339),
-		"source":      source,
+	// Simulated DB logic
+	if id == 1 {
+		return &domain.User{
+			ID:    1,
+			Name:  "Developer",
+			Email: "dev@example.com",
+		}, nil
 	}
 
-	payload, err := json.Marshal(event)
-	if err != nil {
-		log.Printf("[NATS] Failed to marshal event: %v", err)
-		return
-	}
-
-	subject := "user.accessed"
-	err = r.natsConn.Publish(subject, payload)
-	if err != nil {
-		log.Printf("[NATS] Failed to publish message: %v", err)
-	} else {
-		log.Printf("[NATS] Event published to subject '%s'", subject)
-	}
+	return nil, domain.ErrUserNotFound
 }

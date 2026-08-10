@@ -2,12 +2,18 @@ package main
 
 import (
 	"context"
-	"log"
+	"errors"
+	"log/slog"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"backend-go/internal/config"
+	"backend-go/internal/events"
 	"backend-go/internal/handler"
+	"backend-go/internal/pkg/middleware"
 	"backend-go/internal/repository"
 	"backend-go/internal/usecase"
 
@@ -17,20 +23,26 @@ import (
 )
 
 func main() {
-	// 1. Load application configuration securely
+	// 1. Initialize Structured Logger (slog JSON handler)
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+	slog.SetDefault(logger)
+
+	// 2. Load application configuration
 	cfg := config.LoadConfig()
 
-	// 2. Set Gin mode based on the environment
+	// 3. Set Gin Mode
 	if cfg.AppEnv == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	} else {
 		gin.SetMode(gin.DebugMode)
 	}
 
-	// 3. Connect to Redis (Graceful / optional connection)
+	// 4. Initialize Redis Client (Graceful fallback)
 	var redisClient *redis.Client
 	if cfg.RedisAddress != "" {
-		log.Printf("Connecting to Redis at %s...", cfg.RedisAddress)
+		slog.Info("Connecting to Redis", "address", cfg.RedisAddress)
 		redisClient = redis.NewClient(&redis.Options{
 			Addr: cfg.RedisAddress,
 		})
@@ -39,55 +51,86 @@ func main() {
 		defer cancel()
 
 		if err := redisClient.Ping(ctx).Err(); err != nil {
-			log.Printf("Warning: Failed to connect to Redis: %v. Running without cache.", err)
+			slog.Warn("Failed to connect to Redis, running without cache", "error", err)
 			redisClient = nil
 		} else {
-			log.Println("Successfully connected to Redis.")
-			defer redisClient.Close()
+			slog.Info("Successfully connected to Redis")
 		}
 	}
 
-	// 4. Connect to NATS (Graceful / optional connection)
+	// 5. Initialize NATS Connection (Graceful fallback)
 	var natsConn *nats.Conn
 	if cfg.NatsAddress != "" {
-		log.Printf("Connecting to NATS at %s...", cfg.NatsAddress)
+		slog.Info("Connecting to NATS", "address", cfg.NatsAddress)
 		var err error
 		natsConn, err = nats.Connect(cfg.NatsAddress)
 		if err != nil {
-			log.Printf("Warning: Failed to connect to NATS: %v. Running without event streaming.", err)
+			slog.Warn("Failed to connect to NATS, running without event streaming", "error", err)
 			natsConn = nil
 		} else {
-			log.Println("Successfully connected to NATS.")
-			defer natsConn.Close()
+			slog.Info("Successfully connected to NATS")
 
-			// Example: Background subscriber to demonstrate event usage
-			_, err = natsConn.Subscribe("user.accessed", func(msg *nats.Msg) {
-				log.Printf("[NATS Subscriber Demo] Received 'user.accessed' event: %s", string(msg.Data))
+			// Example: Background subscriber demonstration
+			_, _ = natsConn.Subscribe("user.accessed", func(msg *nats.Msg) {
+				slog.Info("[NATS Subscriber Demo] Event received", "data", string(msg.Data))
 			})
-			if err != nil {
-				log.Printf("Warning: Failed to subscribe to NATS subject: %v", err)
-			}
 		}
 	}
 
-	// 5. Initialize Gin router with default middleware (logger and recovery)
-	r := gin.Default()
+	// 6. Wire Dependencies
+	eventPublisher := events.NewNATSEventPublisher(natsConn)
+	userRepo := repository.NewUserRepository(redisClient, cfg.CacheTTL)
+	userUsecase := usecase.NewUserUsecase(userRepo, eventPublisher)
 
-	// 6. Wire dependencies using Clean Architecture & Dependency Injection
-	userRepo := repository.NewUserRepository(redisClient, natsConn)
-	userUsecase := usecase.NewUserUsecase(userRepo)
+	// 7. Setup Router & Middleware
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(middleware.RequestID())
+	r.Use(middleware.Logger())
 
-	// 7. Register HTTP route handlers
+	// 8. Register HTTP Routes
 	handler.RegisterUserRoutes(r, userUsecase)
 
-	// 8. Start the HTTP server
-	log.Printf("Server running at %s (%s)", cfg.ServerAddress, cfg.AppEnv)
+	// 9. Configure HTTP Server
 	srv := &http.Server{
-		Addr:    cfg.ServerAddress,
-		Handler: r,
+		Addr:         cfg.ServerAddress,
+		Handler:      r,
+		ReadTimeout:  cfg.ReadTimeout,
+		WriteTimeout: cfg.WriteTimeout,
 	}
 
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("Failed to start server: %v", err)
+	// 10. Start Server in a separate goroutine
+	go func() {
+		slog.Info("Server is starting", "address", cfg.ServerAddress, "env", cfg.AppEnv)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("Failed to start server", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	// 11. Graceful Shutdown listener
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	slog.Info("Shutdown signal received, shutting down server gracefully...")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("Server forced to shutdown", "error", err)
 	}
+
+	// Close Redis & NATS connections
+	if redisClient != nil {
+		_ = redisClient.Close()
+		slog.Info("Redis connection closed")
+	}
+	if natsConn != nil {
+		natsConn.Close()
+		slog.Info("NATS connection closed")
+	}
+
+	slog.Info("Server shutdown complete")
 }
