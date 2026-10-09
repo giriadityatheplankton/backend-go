@@ -69,14 +69,21 @@ new:
 		exit 1; \
 	fi
 	@echo "Copying template to $(path)..."
-	@mkdir -p $(path)
-	@rsync -av --exclude='bin' --exclude='.git' ./ $(path)/
+	@mkdir -p "$(path)"
+	@rsync -av --exclude='bin' --exclude='.git' ./ "$(path)"/
 	@echo "Changing module name to $(module)..."
-	@sed -i 's|module backend-go|module $(module)|g' $(path)/go.mod
-	@echo "Updating imports in Go files..."
-	@find $(path) -type f -name "*.go" -exec sed -i 's|"backend-go/|"$(module)/|g' {} +
+	@if command -v perl >/dev/null 2>&1; then \
+		perl -pi -e 's|module backend-go|module $(module)|g' "$(path)/go.mod"; \
+		find "$(path)" -type f \( -name "*.go" -o -name "*.proto" -o -name "*.yaml" -o -name "*.yml" -o -name "Makefile" -o -name "Dockerfile" \) -exec perl -pi -e 's|backend-go|$(module)|g' {} +; \
+	elif [ "$$(uname)" = "Darwin" ]; then \
+		sed -i '' 's|module backend-go|module $(module)|g' "$(path)/go.mod"; \
+		find "$(path)" -type f -name "*.go" -exec sed -i '' 's|"backend-go/|"$(module)/|g' {} +; \
+	else \
+		sed -i 's|module backend-go|module $(module)|g' "$(path)/go.mod"; \
+		find "$(path)" -type f -name "*.go" -exec sed -i 's|"backend-go/|"$(module)/|g' {} +; \
+	fi
 	@echo "Running go mod tidy and tests in new project..."
-	@cd $(path) && go mod tidy && go test -v ./...
+	@cd "$(path)" && go mod tidy && go test ./...
 	@echo "New project successfully created at $(path)!"
 
 

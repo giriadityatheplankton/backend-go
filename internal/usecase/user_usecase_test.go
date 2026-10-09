@@ -54,6 +54,7 @@ func TestGetUser(t *testing.T) {
 					Name:  "Test User",
 					Email: "test@example.com",
 				}, nil)
+				mockPublisher.On("PublishUserAccessed", mock.Anything, mock.Anything).Return(nil).Maybe()
 			},
 			expectedUser: &domain.User{
 				ID:    1,

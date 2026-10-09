@@ -206,7 +206,7 @@ NEW_MODULE="my-new-project"
 
 mkdir -p "$NEW_PATH"
 rsync -av --exclude='bin' --exclude='.git' ./ "$NEW_PATH"/
-sed -i "s|module backend-go|module $NEW_MODULE|g" "$NEW_PATH/go.mod"
-find "$NEW_PATH" -type f -name "*.go" -exec sed -i "s|\"backend-go/|\"$NEW_MODULE/|g" {} +
-cd "$NEW_PATH" && go mod tidy && go test -v ./...
+perl -pi -e "s|module backend-go|module $NEW_MODULE|g" "$NEW_PATH/go.mod"
+find "$NEW_PATH" -type f \( -name "*.go" -o -name "*.proto" -o -name "*.yaml" -o -name "*.yml" -o -name "Makefile" -o -name "Dockerfile" \) -exec perl -pi -e "s|backend-go|$NEW_MODULE|g" {} +
+cd "$NEW_PATH" && go mod tidy && go test ./...
 ```
