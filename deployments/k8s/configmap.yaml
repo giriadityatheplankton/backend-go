@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-go-config
+  namespace: default
+data:
+  APP_ENV: "production"
+  SERVER_ADDRESS: ":8080"
+  GRPC_ADDRESS: ":50051"
+  READ_TIMEOUT: "5s"
+  WRITE_TIMEOUT: "10s"
+  SHUTDOWN_TIMEOUT: "15s"
+  CACHE_TTL: "5m"

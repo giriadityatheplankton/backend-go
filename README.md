@@ -58,6 +58,25 @@ backend-go/
 ### 5. Database Optimization & Multi-Tenancy (`internal/pkg/database`)
 - **Read/Write Splitting (`DBGroup`)**: Automatically routes mutation queries (`Write()`) to Primary DB and query operations (`Read()`) across read-replica pools using round-robin distribution.
 - **Dynamic Tenant Router (`DynamicTenantRouter`)**: Resolves tenant-specific database connection pools dynamically based on `TenantID` in context.
+- **Embedded Migration Engine (`internal/pkg/database/migration`)**: Programmatic DDL execution using `go:embed` SQL files with transaction safety and version tracking (`schema_migrations`).
+
+### 6. Kubernetes Probes, Observability & Graceful Shutdown
+- **Health Probes (`internal/pkg/health`)**: Non-blocking asynchronous checks for Primary/Replica DB, Redis, and NATS at `/healthz/live` and `/healthz/ready`.
+- **Prometheus Metrics (`internal/pkg/metrics`)**: Exposes HTTP/gRPC RED metrics, outbox queue metrics, and DB connection pool stats at `/metrics`.
+- **Phased Graceful Shutdown (`internal/pkg/shutdown`)**: Multi-phase termination handling SIGTERM/SIGINT (Readiness flip -> Ingress drain -> Listener shutdown -> Worker drain -> Client cleanup).
+- **Context Deadlines & Timeouts (`internal/pkg/middleware/timeout.go`)**: Global request timeout injection with downstream deadline propagation.
+
+---
+
+## Deployment & Kubernetes Manifests
+
+Ready-to-use production assets located under `deployments/`:
+- **Docker (`deployments/docker/Dockerfile`)**: Multi-stage build with Go module caching, non-root user `appuser:10001`, and minimal runtime image.
+- **Kubernetes (`deployments/k8s/`)**:
+  - `deployment.yaml`: Zero-downtime rolling update, security context, liveness/readiness/startup probes, and `preStop` hook.
+  - `hpa.yaml`: Horizontal Pod Autoscaler targeting CPU (70%), Memory (80%), and Prometheus metrics.
+  - `pdb.yaml`: Pod Disruption Budget guaranteeing minimum pod availability.
+  - `service.yaml` & `configmap.yaml`: Networking and environment configurations.
 
 ---
 

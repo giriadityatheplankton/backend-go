@@ -4,16 +4,20 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"backend-go/internal/config"
 	"backend-go/internal/events"
+	handlergrpc "backend-go/internal/handler/grpc"
 	handlerhttp "backend-go/internal/handler/http"
+	"backend-go/internal/pkg/health"
+	"backend-go/internal/pkg/metrics"
 	"backend-go/internal/pkg/middleware"
+	"backend-go/internal/pkg/outbox"
+	"backend-go/internal/pkg/shutdown"
 	"backend-go/internal/pkg/telemetry"
 	"backend-go/internal/repository"
 	"backend-go/internal/usecase"
@@ -21,6 +25,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/nats-io/nats.go"
 	"github.com/redis/go-redis/v9"
+	"google.golang.org/grpc"
 )
 
 func main() {
@@ -41,7 +46,11 @@ func main() {
 		gin.SetMode(gin.DebugMode)
 	}
 
-	// 4. Initialize Redis Client (Graceful fallback)
+	// 4. Initialize Prometheus Metrics & Health Manager
+	promMetrics := metrics.InitMetrics(nil)
+	healthMgr := health.NewManager(2 * time.Second)
+
+	// 5. Initialize Redis Client (Graceful fallback)
 	var redisClient *redis.Client
 	if cfg.RedisAddress != "" {
 		slog.Info("Connecting to Redis", "address", cfg.RedisAddress)
@@ -50,17 +59,19 @@ func main() {
 		})
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-
 		if err := redisClient.Ping(ctx).Err(); err != nil {
 			slog.Warn("Failed to connect to Redis, running without cache", "error", err)
 			redisClient = nil
 		} else {
 			slog.Info("Successfully connected to Redis")
+			healthMgr.Register("redis", health.CheckerFunc(func(c context.Context) error {
+				return redisClient.Ping(c).Err()
+			}))
 		}
+		cancel()
 	}
 
-	// 5. Initialize NATS Connection (Graceful fallback)
+	// 6. Initialize NATS Connection (Graceful fallback)
 	var natsConn *nats.Conn
 	if cfg.NatsAddress != "" {
 		slog.Info("Connecting to NATS", "address", cfg.NatsAddress)
@@ -71,68 +82,148 @@ func main() {
 			natsConn = nil
 		} else {
 			slog.Info("Successfully connected to NATS")
-
-			// Example: Background subscriber demonstration
-			_, _ = natsConn.Subscribe("user.accessed", func(msg *nats.Msg) {
-				slog.Info("[NATS Subscriber Demo] Event received", "data", string(msg.Data))
-			})
+			healthMgr.Register("nats", health.CheckerFunc(func(c context.Context) error {
+				if !natsConn.IsConnected() {
+					return errors.New("nats disconnected")
+				}
+				return nil
+			}))
 		}
 	}
 
-	// 6. Wire Dependencies
+	// 7. Wire Domain Dependencies
 	eventPublisher := events.NewNATSEventPublisher(natsConn)
 	userRepo := repository.NewUserRepository(redisClient, cfg.CacheTTL)
 	userUsecase := usecase.NewUserUsecase(userRepo, eventPublisher)
 
-	// 7. Setup Router & Middleware
+	// 8. Initialize Outbox Worker
+	outboxRepo := outbox.NewMemoryRepository()
+	var outboxLock outbox.DistributedLock
+	if redisClient != nil {
+		outboxLock = outbox.NewRedisDistributedLock(redisClient)
+	}
+	outboxWorker := outbox.NewWorker(outbox.DefaultConfig(), outboxRepo, outboxLock, outbox.MessagePublisher(nil))
+	outboxCtx, outboxCancel := context.WithCancel(context.Background())
+	if outboxLock != nil {
+		outboxWorker.Start(outboxCtx)
+	}
+
+	// 9. Setup HTTP Router & Middleware
 	r := gin.New()
 	r.Use(gin.Recovery())
+	r.Use(telemetry.HTTPMiddleware())
+	r.Use(promMetrics.HTTPMiddleware())
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger())
+	r.Use(middleware.TimeoutMiddleware(10 * time.Second))
 
-	// 8. Register HTTP Routes
+	// Register System & Observability Endpoints
+	r.GET("/healthz/live", healthMgr.LivenessHandler)
+	r.GET("/healthz/ready", healthMgr.ReadinessHandler)
+	r.GET("/metrics", metrics.Handler())
+
+	// Register Business Routes
 	handlerhttp.RegisterUserRoutes(r, userUsecase)
 
-	// 9. Configure HTTP Server
-	srv := &http.Server{
+	// 10. Setup gRPC Server
+	grpcSrv := grpc.NewServer(
+		grpc.ChainUnaryInterceptor(
+			telemetry.UnaryServerTraceInterceptor(),
+			promMetrics.GRPCUnaryInterceptor(),
+			middleware.GRPCUnaryTimeoutInterceptor(10*time.Second),
+		),
+	)
+	_ = handlergrpc.NewUserGRPCHandler(userUsecase)
+
+	// 11. Configure & Start HTTP Server
+	httpSrv := &http.Server{
 		Addr:         cfg.ServerAddress,
 		Handler:      r,
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 	}
 
-	// 10. Start Server in a separate goroutine
 	go func() {
-		slog.Info("Server is starting", "address", cfg.ServerAddress, "env", cfg.AppEnv)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("Failed to start server", "error", err)
-			os.Exit(1)
+		slog.Info("HTTP Server is starting", "address", cfg.ServerAddress, "env", cfg.AppEnv)
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("Failed to start HTTP server", "error", err)
 		}
 	}()
 
-	// 11. Graceful Shutdown listener
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
-	slog.Info("Shutdown signal received, shutting down server gracefully...")
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-	defer cancel()
-
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		slog.Error("Server forced to shutdown", "error", err)
+	// 12. Configure & Start gRPC Server
+	grpcLis, err := net.Listen("tcp", ":50051")
+	if err == nil {
+		go func() {
+			slog.Info("gRPC Server is starting", "address", ":50051")
+			if err := grpcSrv.Serve(grpcLis); err != nil {
+				slog.Warn("gRPC server terminated", "error", err)
+			}
+		}()
 	}
 
-	// Close Redis & NATS connections
-	if redisClient != nil {
-		_ = redisClient.Close()
-		slog.Info("Redis connection closed")
-	}
-	if natsConn != nil {
-		natsConn.Close()
-		slog.Info("NATS connection closed")
-	}
+	// 13. Phased Graceful Shutdown Engine
+	shutdownEngine := shutdown.NewEngine(2*time.Second, cfg.ShutdownTimeout)
 
-	slog.Info("Server shutdown complete")
+	// Phase 1: Ingress / Endpoint drain (flip readiness probe)
+	shutdownEngine.AddPhase(shutdown.Task{
+		Name: "Deregister Readiness Probe",
+		Fn: func(ctx context.Context) error {
+			healthMgr.SetReady(false)
+			return nil
+		},
+	})
+
+	// Phase 2: Stop HTTP & gRPC Listeners
+	shutdownEngine.AddPhase(
+		shutdown.Task{
+			Name: "Shutdown HTTP Server",
+			Fn: func(ctx context.Context) error {
+				return httpSrv.Shutdown(ctx)
+			},
+		},
+		shutdown.Task{
+			Name: "Graceful Stop gRPC Server",
+			Fn: func(ctx context.Context) error {
+				grpcSrv.GracefulStop()
+				return nil
+			},
+		},
+	)
+
+	// Phase 3: Stop background Outbox Worker
+	shutdownEngine.AddPhase(shutdown.Task{
+		Name: "Stop Outbox Worker",
+		Fn: func(ctx context.Context) error {
+			outboxCancel()
+			outboxWorker.Stop()
+			return nil
+		},
+	})
+
+	// Phase 4: Close Connection Pools & Clients
+	shutdownEngine.AddPhase(
+		shutdown.Task{
+			Name: "Close Redis Client",
+			Fn: func(ctx context.Context) error {
+				if redisClient != nil {
+					return redisClient.Close()
+				}
+				return nil
+			},
+		},
+		shutdown.Task{
+			Name: "Close NATS Connection",
+			Fn: func(ctx context.Context) error {
+				if natsConn != nil {
+					natsConn.Close()
+				}
+				return nil
+			},
+		},
+	)
+
+	// Block until signal received and execute phased shutdown
+	if err := shutdownEngine.ListenAndServe(); err != nil {
+		slog.Error("Shutdown completed with error", "error", err)
+	}
 }
