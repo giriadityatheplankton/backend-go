@@ -14,6 +14,7 @@ backend-go/
 │   ├── docker/                     # Multi-stage hardened Dockerfile
 │   └── k8s/                        # Kubernetes Deployment, Job, NetPol, HPA, PDB manifests
 ├── docs/
+│   ├── configuration_management_migration_guide.md # Centralized Config (Consul/Vault/ESO) migration guide
 │   ├── project.md                  # Comprehensive architecture documentation
 │   └── proto_migration_guide.md    # Centralized Protobuf migration guide
 ├── internal/
