@@ -120,48 +120,71 @@ Ready-to-use production assets located under `deployments/`:
 
 ---
 
-## Prerequisites
+## Configuration
 
-- **Go**: Version 1.22 or higher.
-- **Rsync** (optional, for template cloning): Usually pre-installed on Linux/WSL/macOS.
+Configuration values are dynamically loaded from environment-specific files based on `APP_ENV` (`.env.development` or `.env.production`), falling back to `.env` and system environment variables.
+
+### Environment Files:
+- **`.env.development`**: Configured for local debugging with verbose `LOG_LEVEL=debug`, relaxed timeouts (`60s`) for IDE breakpoint inspection, local addresses, and lightweight Outbox concurrency.
+- **`.env.production`**: Hardened for production with `LOG_LEVEL=info`, strict timeouts (`10s`), high-throughput Outbox worker partitioning, and tight rate limits.
+- **`.env.example`**: Comprehensive reference listing all available configuration variables.
+
+### Available Variables:
+
+| Variable | Description | Development Default | Production Default |
+|----------|-------------|---------------------|--------------------|
+| `APP_ENV` | Application environment (`development` / `production`). | `development` | `production` |
+| `LOG_LEVEL` | Structured log severity (`debug`, `info`, `warn`, `error`). | `debug` | `info` |
+| `SERVER_ADDRESS` | HTTP server host and port. | `127.0.0.1:8080` | `:8080` |
+| `GRPC_ADDRESS` | gRPC server host and port. | `127.0.0.1:50051` | `:50051` |
+| `PPROF_ADDRESS` | Isolated diagnostic pprof server address. | `127.0.0.1:6060` | `127.0.0.1:6060` |
+| `READ_TIMEOUT` | HTTP server read timeout. | `60s` | `10s` |
+| `WRITE_TIMEOUT` | HTTP server write timeout. | `60s` | `10s` |
+| `SHUTDOWN_TIMEOUT` | Graceful shutdown timeout before forced kill. | `5s` | `15s` |
+| `DB_PRIMARY_DSN` | Primary PostgreSQL connection string (Write). | `postgres://.../appdb_dev` | `postgres://.../appdb` |
+| `DB_REPLICA_DSN` | Read-replica PostgreSQL connection string (Read). | `postgres://.../appdb_dev` | `postgres://.../appdb` |
+| `DB_MAX_OPEN_CONNS`| Max open connections in DB pool. | `10` | `50` |
+| `DB_MAX_IDLE_CONNS`| Max idle connections in DB pool. | `5` | `20` |
+| `DB_CONN_MAX_LIFETIME`| Max connection lifetime in pool. | `10m` | `15m` |
+| `REDIS_ADDRESS` | Redis host and port for lock & caching. | `127.0.0.1:6379` | `redis-cluster:6379` |
+| `CACHE_TTL` | Entity caching duration. | `1m` | `15m` |
+| `NATS_ADDRESS` | Message broker address. | `nats://127.0.0.1:4222` | `nats://nats-cluster:4222` |
+| `OUTBOX_PARTITIONS`| Outbox processing partition count. | `2` | `16` |
+| `OUTBOX_BATCH_SIZE`| Batch fetch size per partition. | `20` | `200` |
+| `OUTBOX_POLL_INTERVAL`| Polling interval for pending events. | `500ms` | `100ms` |
+| `IDEMPOTENCY_TTL` | Deduplication response cache duration. | `10m` | `24h` |
+| `RATE_LIMIT_REQUESTS`| Sliding-window rate limit request count. | `1000` | `100` |
+| `RATE_LIMIT_WINDOW`| Sliding-window duration. | `1m` | `1m` |
 
 ---
 
 ## Getting Started
 
-### 1. Run the Server Locally
-To start the HTTP server in development mode:
+### 1. Run the Server Locally (Development / Debug Mode)
 ```bash
-go run cmd/api/main.go
+APP_ENV=development go run cmd/api/main.go
 ```
-The server will run on `http://127.0.0.1:8080` by default.
+The server will run on `http://127.0.0.1:8080` with pprof at `http://127.0.0.1:6060/debug/pprof/`.
 
-### 2. Run Unit Tests
-To run all unit tests and verify correctness:
+### 2. Run the Server in Production Mode
 ```bash
+APP_ENV=production go run cmd/api/main.go
+```
+
+### 3. Run Unit & Integration Tests
+```bash
+# Run unit tests
 go test -v -cover ./...
+
+# Run Testcontainers integration tests (requires Docker)
+make test-integration
 ```
 
-### 3. Build the Binary
-To compile the application into a single executable binary:
+### 4. Build the Binary
 ```bash
 go build -o bin/api cmd/api/main.go
-```
-Run the compiled binary:
-```bash
 ./bin/api
 ```
-
----
-
-## Configuration
-
-Configuration values are loaded from environment variables or an optional `.env` file in the root directory.
-
-| Variable | Description | Default Value |
-|----------|-------------|---------------|
-| `SERVER_ADDRESS` | The host and port where the HTTP server listens. | `127.0.0.1:8080` |
-| `APP_ENV` | Application runtime environment (`development` / `production`). | `development` |
 
 ---
 
