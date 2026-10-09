@@ -12,8 +12,9 @@ import (
 
 	"backend-go/internal/config"
 	"backend-go/internal/events"
-	"backend-go/internal/handler"
+	handlerhttp "backend-go/internal/handler/http"
 	"backend-go/internal/pkg/middleware"
+	"backend-go/internal/pkg/telemetry"
 	"backend-go/internal/repository"
 	"backend-go/internal/usecase"
 
@@ -23,11 +24,12 @@ import (
 )
 
 func main() {
-	// 1. Initialize Structured Logger (slog JSON handler)
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	// 1. Initialize Structured Logger with Trace context handler
+	baseHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
-	}))
-	slog.SetDefault(logger)
+	})
+	traceHandler := telemetry.NewTraceHandler(baseHandler)
+	slog.SetDefault(slog.New(traceHandler))
 
 	// 2. Load application configuration
 	cfg := config.LoadConfig()
@@ -89,7 +91,7 @@ func main() {
 	r.Use(middleware.Logger())
 
 	// 8. Register HTTP Routes
-	handler.RegisterUserRoutes(r, userUsecase)
+	handlerhttp.RegisterUserRoutes(r, userUsecase)
 
 	// 9. Configure HTTP Server
 	srv := &http.Server{
