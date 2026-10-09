@@ -15,6 +15,7 @@ type Repository interface {
 	MarkFailed(ctx context.Context, id string, errStr string, nextRetry time.Time) error
 	MoveToDLQ(ctx context.Context, id string, reason string) error
 	SaveDLQ(ctx context.Context, dlq *DLQEvent) error
+	DeletePublishedBefore(ctx context.Context, before time.Time, limit int) (int64, error)
 }
 
 // MemoryRepository provides thread-safe in-memory storage for development/testing.
@@ -120,4 +121,21 @@ func (m *MemoryRepository) SaveDLQ(ctx context.Context, dlq *DLQEvent) error {
 	defer m.mu.Unlock()
 	m.dlq[dlq.ID] = dlq
 	return nil
+}
+
+func (m *MemoryRepository) DeletePublishedBefore(ctx context.Context, before time.Time, limit int) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var deleted int64
+	for id, ev := range m.events {
+		if ev.Status == StatusPublished && ev.UpdatedAt.Before(before) {
+			delete(m.events, id)
+			deleted++
+			if limit > 0 && int(deleted) >= limit {
+				break
+			}
+		}
+	}
+	return deleted, nil
 }

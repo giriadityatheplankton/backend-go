@@ -1,0 +1,81 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-go-netpol
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: backend-go
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # 1. Allow HTTP traffic from Ingress Controller & Internal Services
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: backend-services
+      ports:
+        - protocol: TCP
+          port: 8080
+
+    # 2. Allow gRPC internal microservice traffic
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: backend-services
+      ports:
+        - protocol: TCP
+          port: 50051
+
+    # 3. Allow Prometheus Scraping
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8080
+
+    # 4. Allow pprof diagnostics only from Monitoring/Admin Pods
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 6060
+
+  egress:
+    # 1. Allow DNS Resolution
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # 2. Allow PostgreSQL Database
+    - ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 5433
+
+    # 3. Allow Redis Caching / Locking
+    - ports:
+        - protocol: TCP
+          port: 6379
+
+    # 4. Allow NATS Message Broker
+    - ports:
+        - protocol: TCP
+          port: 4222

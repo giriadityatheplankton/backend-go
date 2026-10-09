@@ -9,6 +9,8 @@ import (
 	"os"
 	"time"
 
+	_ "go.uber.org/automaxprocs"
+
 	"backend-go/internal/config"
 	"backend-go/internal/events"
 	handlergrpc "backend-go/internal/handler/grpc"
@@ -39,18 +41,21 @@ func main() {
 	// 2. Load application configuration
 	cfg := config.LoadConfig()
 
-	// 3. Set Gin Mode
+	// 3. Start isolated internal pprof diagnostic server
+	pprofSrv := StartPprofServer("127.0.0.1:6060")
+
+	// 4. Set Gin Mode
 	if cfg.AppEnv == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	} else {
 		gin.SetMode(gin.DebugMode)
 	}
 
-	// 4. Initialize Prometheus Metrics & Health Manager
+	// 5. Initialize Prometheus Metrics & Health Manager
 	promMetrics := metrics.InitMetrics(nil)
 	healthMgr := health.NewManager(2 * time.Second)
 
-	// 5. Initialize Redis Client (Graceful fallback)
+	// 6. Initialize Redis Client (Graceful fallback)
 	var redisClient *redis.Client
 	if cfg.RedisAddress != "" {
 		slog.Info("Connecting to Redis", "address", cfg.RedisAddress)
@@ -71,7 +76,7 @@ func main() {
 		cancel()
 	}
 
-	// 6. Initialize NATS Connection (Graceful fallback)
+	// 7. Initialize NATS Connection (Graceful fallback)
 	var natsConn *nats.Conn
 	if cfg.NatsAddress != "" {
 		slog.Info("Connecting to NATS", "address", cfg.NatsAddress)
@@ -91,26 +96,32 @@ func main() {
 		}
 	}
 
-	// 7. Wire Domain Dependencies
+	// 8. Wire Domain Dependencies
 	eventPublisher := events.NewNATSEventPublisher(natsConn)
 	userRepo := repository.NewUserRepository(redisClient, cfg.CacheTTL)
 	userUsecase := usecase.NewUserUsecase(userRepo, eventPublisher)
 
-	// 8. Initialize Outbox Worker
+	// 9. Initialize Outbox Worker & Retention Cleaner
 	outboxRepo := outbox.NewMemoryRepository()
 	var outboxLock outbox.DistributedLock
 	if redisClient != nil {
 		outboxLock = outbox.NewRedisDistributedLock(redisClient)
 	}
+
 	outboxWorker := outbox.NewWorker(outbox.DefaultConfig(), outboxRepo, outboxLock, outbox.MessagePublisher(nil))
+	outboxCleaner := outbox.NewCleaner(outbox.DefaultCleanerConfig(), outboxRepo, outboxLock)
+
 	outboxCtx, outboxCancel := context.WithCancel(context.Background())
 	if outboxLock != nil {
 		outboxWorker.Start(outboxCtx)
+		outboxCleaner.Start(outboxCtx)
 	}
 
-	// 9. Setup HTTP Router & Middleware
+	// 10. Setup HTTP Router & Hardened Middleware Pipeline
 	r := gin.New()
-	r.Use(gin.Recovery())
+	r.Use(middleware.RecoveryMiddleware())
+	r.Use(middleware.SecurityHeaders())
+	r.Use(middleware.CORS(middleware.DefaultCORSConfig()))
 	r.Use(telemetry.HTTPMiddleware())
 	r.Use(promMetrics.HTTPMiddleware())
 	r.Use(middleware.RequestID())
@@ -125,9 +136,10 @@ func main() {
 	// Register Business Routes
 	handlerhttp.RegisterUserRoutes(r, userUsecase)
 
-	// 10. Setup gRPC Server
+	// 11. Setup gRPC Server with Panic Recovery and Tracing
 	grpcSrv := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
+			middleware.GRPCUnaryRecoveryInterceptor(),
 			telemetry.UnaryServerTraceInterceptor(),
 			promMetrics.GRPCUnaryInterceptor(),
 			middleware.GRPCUnaryTimeoutInterceptor(10*time.Second),
@@ -135,7 +147,7 @@ func main() {
 	)
 	_ = handlergrpc.NewUserGRPCHandler(userUsecase)
 
-	// 11. Configure & Start HTTP Server
+	// 12. Configure & Start HTTP Server
 	httpSrv := &http.Server{
 		Addr:         cfg.ServerAddress,
 		Handler:      r,
@@ -150,7 +162,7 @@ func main() {
 		}
 	}()
 
-	// 12. Configure & Start gRPC Server
+	// 13. Configure & Start gRPC Server
 	grpcLis, err := net.Listen("tcp", ":50051")
 	if err == nil {
 		go func() {
@@ -161,7 +173,7 @@ func main() {
 		}()
 	}
 
-	// 13. Phased Graceful Shutdown Engine
+	// 14. Phased Graceful Shutdown Engine
 	shutdownEngine := shutdown.NewEngine(2*time.Second, cfg.ShutdownTimeout)
 
 	// Phase 1: Ingress / Endpoint drain (flip readiness probe)
@@ -173,7 +185,7 @@ func main() {
 		},
 	})
 
-	// Phase 2: Stop HTTP & gRPC Listeners
+	// Phase 2: Stop HTTP, gRPC, and pprof Listeners
 	shutdownEngine.AddPhase(
 		shutdown.Task{
 			Name: "Shutdown HTTP Server",
@@ -188,14 +200,21 @@ func main() {
 				return nil
 			},
 		},
+		shutdown.Task{
+			Name: "Shutdown pprof Server",
+			Fn: func(ctx context.Context) error {
+				return pprofSrv.Shutdown(ctx)
+			},
+		},
 	)
 
-	// Phase 3: Stop background Outbox Worker
+	// Phase 3: Stop background Outbox Worker & Cleaner
 	shutdownEngine.AddPhase(shutdown.Task{
-		Name: "Stop Outbox Worker",
+		Name: "Stop Outbox Worker and Cleaner",
 		Fn: func(ctx context.Context) error {
 			outboxCancel()
 			outboxWorker.Stop()
+			outboxCleaner.Stop()
 			return nil
 		},
 	})

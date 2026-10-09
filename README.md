@@ -65,6 +65,13 @@ backend-go/
 - **Prometheus Metrics (`internal/pkg/metrics`)**: Exposes HTTP/gRPC RED metrics, outbox queue metrics, and DB connection pool stats at `/metrics`.
 - **Phased Graceful Shutdown (`internal/pkg/shutdown`)**: Multi-phase termination handling SIGTERM/SIGINT (Readiness flip -> Ingress drain -> Listener shutdown -> Worker drain -> Client cleanup).
 - **Context Deadlines & Timeouts (`internal/pkg/middleware/timeout.go`)**: Global request timeout injection with downstream deadline propagation.
+- **Go Runtime & Concurrency Hardening**: `automaxprocs` integration for Kubernetes CPU quota alignment and isolated internal diagnostic server (`cmd/api/pprof.go` on `:6060`).
+
+### 7. Security, Auditing & Panic Recovery
+- **Panic Recovery Middleware (`internal/pkg/middleware/recovery.go`)**: Recovers runtime panics across Gin and gRPC with structured JSON logs preserving contextual trace identifiers.
+- **Security Headers & Strict CORS (`internal/pkg/middleware/security.go`)**: OWASP-aligned response headers (`X-Frame-Options`, `X-Content-Type-Options`, `HSTS`, `CSP`) and fine-grained CORS.
+- **Immutable Audit Trail (`internal/pkg/audit`)**: Captures mutation events with actor, before/after states, IP, user-agent, and trace IDs.
+- **Outbox Retention Cleaner (`internal/pkg/outbox/cleaner.go`)**: Distributed locked background worker that purges processed records to prevent table bloat.
 
 ---
 
@@ -74,6 +81,8 @@ Ready-to-use production assets located under `deployments/`:
 - **Docker (`deployments/docker/Dockerfile`)**: Multi-stage build with Go module caching, non-root user `appuser:10001`, and minimal runtime image.
 - **Kubernetes (`deployments/k8s/`)**:
   - `deployment.yaml`: Zero-downtime rolling update, security context, liveness/readiness/startup probes, and `preStop` hook.
+  - `job-migration.yaml`: Pre-deployment DDL database migration Job.
+  - `networkpolicy.yaml`: Microsegmentation restricting ingress/egress network traffic.
   - `hpa.yaml`: Horizontal Pod Autoscaler targeting CPU (70%), Memory (80%), and Prometheus metrics.
   - `pdb.yaml`: Pod Disruption Budget guaranteeing minimum pod availability.
   - `service.yaml` & `configmap.yaml`: Networking and environment configurations.
