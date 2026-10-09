@@ -1,261 +1,146 @@
-Membuat base project Golang yang testable dan siap untuk CI/CD membutuhkan struktur yang modular. Kunci utama agar unit test mudah diimplementasikan adalah dengan menggunakan Clean Architecture dan Dependency Injection melalui Interfaces.
+# Base Project Golang Clean Architecture (Production & Kubernetes Ready)
 
-Berikut adalah rencana komprehensif untuk membangun base backend project tersebut.
+Base backend Golang menggunakan Clean Architecture, Gin HTTP & gRPC delivery, didesain untuk menangani beban transaksi tinggi (high-traffic), testable, dan siap untuk deployment Kubernetes (K8s).
 
-1. Struktur Direktori Utama
-Gunakan adaptasi dari Standard Go Project Layout. Struktur ini memisahkan konfigurasi, logika bisnis, dan entry point aplikasi.
+---
 
-Plaintext
-my-go-backend/
+## 1. Struktur Direktori Utama
+
+Mengikuti Standard Go Project Layout yang modular:
+
+```plaintext
+backend-go/
 ├── .github/
 │   └── workflows/
-│       └── ci.yml             # Script CI/CD GitHub Actions
+│       └── ci.yml                 # Script CI/CD GitHub Actions (Lint, Test, Build)
 ├── cmd/
 │   └── api/
-│       └── main.go            # Entry point aplikasi (wiring dependencies)
+│       └── main.go                # Entry point aplikasi (DI, HTTP & gRPC server, Phased Shutdown)
+├── deployments/
+│   ├── docker/
+│   │   └── Dockerfile             # Multi-stage hardened Dockerfile (Non-root 10001, Cache mounts)
+│   └── k8s/
+│       ├── configmap.yaml         # Environment config
+│       ├── deployment.yaml        # K8s Deployment (Probes, preStop hook, SecurityContext)
+│       ├── hpa.yaml               # Horizontal Pod Autoscaler (CPU, Memory, Prometheus Metrics)
+│       ├── pdb.yaml               # PodDisruptionBudget (Zero-downtime rolling updates)
+│       └── service.yaml           # Service networking (HTTP 8080 & gRPC 50051)
+├── docs/
+│   └── project.md                 # Dokumentasi arsitektur proyek
 ├── internal/
-│   ├── config/                # Load environment variables (.env)
-│   ├── domain/                # Structs/Models dan Interfaces (Core)
-│   ├── handler/               # HTTP Delivery (REST API / GraphQL)
-│   ├── repository/            # Implementasi Database (Postgres, MySQL)
-│   └── usecase/               # Business logic
-├── pkg/
-│   └── logger/                # Utility yang bisa dipakai ulang (custom logger, dll)
-├── go.mod
-├── go.sum
-└── Makefile                   # Kumpulan script untuk run, test, build
-2. Strategi Arsitektur & Kemudahan Unit Test
-Agar mudah dites tanpa harus terhubung ke database asli, setiap layer harus bergantung pada Interface, bukan implementasi langsung.
+│   ├── config/                    # Loader environment variables (.env)
+│   ├── domain/                    # Entities, custom errors, dan interfaces kontrak
+│   ├── events/                    # Publisher message broker (NATS / Kafka)
+│   ├── handler/
+│   │   ├── http/                  # HTTP Delivery Layer (Gin REST controllers & routing)
+│   │   └── grpc/                  # gRPC Delivery Layer (Service server adapters)
+│   ├── pkg/
+│   │   ├── database/              # Read/Write Splitting & Multi-Tenant DB Router
+│   │   │   └── migration/         # Programmatic DDL Migration Engine (go:embed SQL)
+│   │   ├── health/                # Non-blocking K8s Liveness & Readiness Probes
+│   │   ├── idempotency/           # Universal Idempotency Engine (HTTP & gRPC middleware)
+│   │   ├── metrics/               # Prometheus RED Metrics, Outbox & DB Pool Collector
+│   │   ├── middleware/            # Context Timeout, Request ID, Slog Logger
+│   │   ├── outbox/                # Partitioned Outbox Worker, Distributed Lock (Redis), DLQ
+│   │   ├── resilience/            # Distributed Sliding Window Rate Limiter & sony/gobreaker CB
+│   │   ├── response/              # Standardized JSON response helpers
+│   │   ├── shutdown/              # Phased Graceful Shutdown Engine (SIGTERM/SIGINT)
+│   │   └── telemetry/             # W3C TraceContext Propagator & slog TraceHandler
+│   ├── repository/                # Data Access Layer (Redis cache & DB persistence)
+│   └── usecase/                   # Business Logic Layer
+├── proto/
+│   └── user/v1/user.proto         # Protobuf contract definitions
+├── Makefile                       # Automasi build, test, lint, dan scaffolding
+├── go.mod                         # Go module definition
+└── go.sum
+```
 
-Domain Layer (internal/domain): Definisikan model data dan interface untuk Repository & Usecase di sini.
+---
 
-Usecase Layer (internal/usecase): Berisi logika bisnis. Menerima Repository Interface via parameter (Dependency Injection).
+## 2. Arsitektur & Enterprise Modules
 
-Handler Layer (internal/handler): Menangani request/response HTTP. Menerima Usecase Interface.
+Setiap layer bergantung pada **Interface** (Dependency Inversion), memungkinkan unit testing menyeluruh tanpa ketergantungan langsung ke external dependencies.
 
-Rekomendasi Tools Testing:
+### A. Advanced Outbox Worker & Distributed Locking (`internal/pkg/outbox`)
+- **Distributed Locking (`lock.go`)**: Redlock/SETNX via Redis dengan safe unlock menggunakan Lua script agar aman di-deploy pada multiple pod replika di Kubernetes tanpa race condition.
+- **Partitioned Batching (`worker.go`)**: Multi-partition worker pool untuk memproses event outbox secara paralel.
+- **Dead Letter Queue (DLQ)**: Otomatis memindahkan event yang gagal setelah melebihi `MaxRetries` ke storage DLQ dengan exponential backoff.
 
-Standar Library: testing (Go bawaan).
+### B. Idempotency Engine (`internal/pkg/idempotency`)
+- **Universal Middleware (`middleware.go` & `grpc.go`)**: Mencegah double-spend / duplikasi request HTTP (`X-Idempotency-Key`) dan gRPC metadata (`x-idempotency-key`).
+- **Concurrent In-flight Lock & Response Cache**: Request yang sedang berjalan berstatus `STARTED` (menghasilkan status `409 Conflict` atau gRPC `codes.Aborted`), sedangkan request yang sudah selesai berstatus `COMPLETED` akan me-replay cached response secara instan.
 
-Assertions & Mocking: [github.com/stretchr/testify](https://github.com/stretchr/testify) (mempermudah validasi assert.Equal).
+### C. Distributed Tracing & Structured Logging (`internal/pkg/telemetry`)
+- **W3C TraceContext (`trace.go`)**: Propagasi otomatis header `traceparent` melintasi HTTP Request -> gRPC -> Message Broker Headers (NATS/Kafka) -> Worker.
+- **Auto Logger Injection (`slog_handler.go`)**: Menambahkan field `trace_id` dan `span_id` secara otomatis pada structured log (`log/slog`).
 
-Auto-Mock Generator: [github.com/vektra/mockery](https://github.com/vektra/mockery) (untuk men-generate file mock dari interface secara otomatis).
+### D. Resiliency: Rate Limiting & Circuit Breaker (`internal/pkg/resilience`)
+- **Distributed Sliding Window Rate Limiter (`ratelimit.go`)**: Membatasi rate request per tenant (`X-Tenant-ID`), user (`X-User-ID`), atau IP menggunakan Redis Sorted Sets & atomic Lua script.
+- **Circuit Breaker (`circuitbreaker.go`)**: Terintegrasi dengan `github.com/sony/gobreaker/v2` (`CLOSED`, `OPEN`, `HALF_OPEN`) untuk melindungi downstream HTTP dan gRPC client dengan fallback handler.
 
-3. Script CI/CD Pipeline (GitHub Actions)
-Gunakan GitHub Actions untuk otomatisasi Linting, Testing, dan Building setiap kali ada Push atau Pull Request ke branch main.
+### E. Database Read/Write Splitting & Multi-Tenancy (`internal/pkg/database`)
+- **Read/Write Splitting (`DBGroup`)**: Rute query `Write()` ke Primary DB dan `Read()` secara round-robin ke Replica DBs.
+- **Dynamic Tenant Router (`DynamicTenantRouter`)**: Resolusi dinamis database pool per tenant berdasarkan `TenantID` di dalam `context.Context`.
+- **Embedded Migrations (`migration/`)**: Eksekusi DDL database secara terprogram menggunakan `//go:embed sql/*.sql`.
 
-Buat file di .github/workflows/ci.yml:
+### F. K8s Health Probes, Metrics & Phased Graceful Shutdown
+- **Health Probes (`internal/pkg/health`)**: Endpoint `/healthz/live` dan `/healthz/ready` non-blocking memeriksa status Redis, NATS, Primary DB, dan Replica DB.
+- **Prometheus Metrics (`internal/pkg/metrics`)**: Endpoint `/metrics` mengekspos RED metrics, Outbox queue stats, dan DB connection pool stats.
+- **Phased Graceful Shutdown (`internal/pkg/shutdown`)**: Menangani `SIGTERM`/`SIGINT` secara bertahap:
+  1. Set readiness probe ke Unhealthy (drain ingress).
+  2. Stop listener HTTP & gRPC (tuntaskan in-flight requests).
+  3. Stop background Outbox Worker.
+  4. Tutup koneksi DB, Redis, dan Broker.
 
-YAML
-name: Go Backend CI
+---
 
-on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+## 3. Alur Request End-to-End
 
-jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
-    steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
+```text
+[Client]
+   │
+   │ 1. Request (Headers: X-Idempotency-Key, traceparent, X-Tenant-ID)
+   ▼
+[HTTP / gRPC Middleware Pipeline]
+   ├── telemetry.HTTPMiddleware() ──> Injeksi W3C traceparent ke context
+   ├── metrics.HTTPMiddleware() ──> Record RED metrics (Rate, Errors, Duration)
+   ├── middleware.TimeoutMiddleware() ──> Set context deadline
+   ├── resilience.HTTPRateLimitMiddleware() ──> Sliding window rate check via Redis
+   └── idempotency.HTTPMiddleware() ──> Atomic SETNX idempotency key di Redis
+   │
+   ▼
+[Delivery Layer: Handler HTTP / gRPC]
+   └── handler.GetByID() ──> Parsing request DTO & validasi
+   │
+   ▼
+[Business Logic: Usecase Layer]
+   ├── database.TenantIDFromContext(ctx) ──> Resolusi DB tenant
+   ├── dbGroup.Write().ExecContext() ──> Mutasi data di Primary DB
+   └── outboxRepo.Save() ──> Simpan event outbox + traceparent header
+   │
+   ▼
+[Background Outbox Worker Daemon]
+   ├── 1. Acquire Redis Distributed Lock partition P
+   ├── 2. Fetch pending batch
+   ├── 3. Publish ke NATS/Kafka broker + inject traceparent
+   └── 4. Success -> Mark PUBLISHED; Fail Max -> Move to DLQ
+```
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.22'
-        cache: true
+---
 
-    - name: Install Dependencies
-      run: go mod download
+## 4. Perintah Operasional & Pengujian
 
-    - name: Run Linter
-      uses: golangci/golangci-lint-action@v3
-      with:
-        version: latest
-        args: --timeout=5m
+### Menjalankan Unit Tests
+```bash
+go test -v -cover ./...
+```
 
-    - name: Run Unit Tests
-      run: go test -v -coverprofile=coverage.out ./...
+### Menjalankan Server Lokal
+```bash
+go run cmd/api/main.go
+```
 
-    - name: Check Test Coverage
-      run: go tool cover -func=coverage.out
-
-    - name: Build Application
-      run: go build -v -o ./bin/api ./cmd/api/main.go
-4. Makefile untuk Produktivitas
-Sebagai pengguna lingkungan berbasis Linux/WSL, sebuah Makefile akan sangat mempercepat alur kerja harian. Buat file Makefile di root directory:
-
-Makefile
-.PHONY: run test mock lint build clean
-
-run:
-	go run cmd/api/main.go
-
-test:
-	go test -v -cover ./...
-
-# Perintah untuk men-generate mock dari interface menggunakan mockery
-mock:
-	mockery --all --keeptree
-
-lint:
-	golangci-lint run
-
-build:
-	go build -o bin/api cmd/api/main.go
-
-clean:
-	rm -rf bin/
-5. Langkah Eksekusi Pertama (Setup)
-Jalankan urutan perintah ini di terminal untuk menginisialisasi proyek:
-
-Inisialisasi Module:
-
-Bash
-mkdir my-go-backend && cd my-go-backend
-go mod init github.com/username/my-go-backend
-Install Framework & Tools Dasar:
-
-Bash
-# Contoh menggunakan router Chi (ringan, standar library compliant) dan godotenv
-go get github.com/go-chi/chi/v5
-go get github.com/joho/godotenv
-
-# Install Testify untuk testing
-go get -u github.com/stretchr/testify
-Install Mockery (untuk generate mock):
-
-Bash
-go install github.com/vektra/mockery/v2@v2.42.1
-
-Berikut adalah contoh implementasi lengkap untuk satu endpoint (GET /users/{id}).
-
-Contoh ini menggunakan arsitektur yang kita bahas sebelumnya dan menunjukkan bagaimana Dependency Injection membuat mocking menjadi sangat mudah di level Usecase.
-
-1. Layer Domain (internal/domain/user.go)
-Di sini kita mendefinisikan struct (model data) dan interface (kontrak kerja).
-
-Go
-package domain
-
-// Model representasi data
-type User struct {
-	ID    int    `json:"id"`
-	Name  string `json:"name"`
-	Email string `json:"email"`
-}
-
-// Interface untuk Repository (Berhubungan dengan Database)
-type UserRepository interface {
-	GetByID(id int) (*User, error)
-}
-
-// Interface untuk Usecase (Berhubungan dengan Business Logic)
-type UserUsecase interface {
-	GetUser(id int) (*User, error)
-}
-2. Layer Repository (internal/repository/user_repository.go)
-Ini adalah implementasi asli yang akan terhubung ke database. Saat melakukan unit test pada Usecase, layer ini tidak akan dipakai, melainkan akan di-mock.
-
-Go
-package repository
-
-import (
-	"errors"
-	"my-go-backend/internal/domain"
-)
-
-type userRepository struct {
-	// Di aplikasi nyata, Anda akan meng-inject koneksi DB (misal *sql.DB atau GORM) di sini
-}
-
-func NewUserRepository() domain.UserRepository {
-	return &userRepository{}
-}
-
-func (r *userRepository) GetByID(id int) (*domain.User, error) {
-	// DUMMY IMPLEMENTATION: Simulasi query ke database
-	if id == 1 {
-		return &domain.User{ID: 1, Name: "Developer", Email: "dev@example.com"}, nil
-	}
-	return nil, errors.New("user not found")
-}
-3. Layer Usecase (internal/usecase/user_usecase.go)
-Usecase berisi logika bisnis. Perhatikan bagaimana userUsecase menerima domain.UserRepository melalui fungsinya, bukan menginisialisasi database secara langsung. Inilah yang disebut Dependency Injection.
-
-Go
-package usecase
-
-import (
-	"errors"
-	"my-go-backend/internal/domain"
-)
-
-type userUsecase struct {
-	repo domain.UserRepository
-}
-
-// Inject dependency melalui parameter
-func NewUserUsecase(repo domain.UserRepository) domain.UserUsecase {
-	return &userUsecase{
-		repo: repo,
-	}
-}
-
-func (u *userUsecase) GetUser(id int) (*domain.User, error) {
-	// Logika bisnis: ID tidak boleh <= 0
-	if id <= 0 {
-		return nil, errors.New("invalid user ID")
-	}
-
-	// Memanggil repository (bisa DB asli, bisa mock saat test)
-	return u.repo.GetByID(id)
-}
-4. Layer Handler (internal/handler/user_handler.go)
-Handler bertugas menerima request HTTP dan mengembalikan response. (Contoh ini menggunakan framework go-chi/chi).
-
-Go
-package handler
-
-import (
-	"encoding/json"
-	"net/http"
-	"strconv"
-
-	"my-go-backend/internal/domain"
-
-	"github.com/go-chi/chi/v5"
-)
-
-type UserHandler struct {
-	usecase domain.UserUsecase
-}
-
-func NewUserHandler(r chi.Router, us domain.UserUsecase) {
-	handler := &UserHandler{usecase: us}
-	// Mendaftarkan endpoint ke router
-	r.Get("/users/{id}", handler.GetByID)
-}
-
-func (h *UserHandler) GetByID(w http.ResponseWriter, r *http.Request) {
-	idStr := chi.URLParam(r, "id")
-	id, err := strconv.Atoi(idStr)
-	if err != nil {
-		http.Error(w, "invalid ID format", http.StatusBadRequest)
-		return
-	}
-
-	user, err := h.usecase.GetUser(id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(user)
-}
-5. Unit Test Usecase dengan Mock (internal/usecase/user_usecase_test.go)
-Inilah letak magic-nya. Kita akan menguji user_usecase.go tanpa perlu terhubung ke database asli, melainkan menggunakan data pura-pura (mock) lewat library testify.
+### Build Binary
+```bash
+go build -o bin/api cmd/api/main.go
+```
