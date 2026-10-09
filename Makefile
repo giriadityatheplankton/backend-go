@@ -1,10 +1,13 @@
-.PHONY: run test mock lint build clean new docker-build docker-up docker-down
+.PHONY: run test test-integration mock lint build clean new docker-build docker-up docker-down
 
 run:
 	go run cmd/api/main.go
 
 test:
 	go test -v -cover ./...
+
+test-integration:
+	go test -v -tags=integration ./tests/integration/...
 
 # Command to generate mocks from interfaces using mockery
 mock:

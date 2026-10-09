@@ -25,16 +25,25 @@ backend-go/
 │   │   ├── http/                   # REST API Delivery Layer (Gin controllers & routes)
 │   │   └── grpc/                   # gRPC Delivery Layer (Service server adapters)
 │   ├── pkg/
+│   │   ├── audit/                  # Immutable Audit Trail logging
+│   │   ├── cache/                  # Singleflight Stampede-Protected Cache Manager
 │   │   ├── database/               # Read/Write Splitting & Dynamic Multi-Tenant DB Router
+│   │   ├── health/                 # Non-blocking K8s Liveness & Readiness Probes
 │   │   ├── idempotency/            # Universal Idempotency Engine (HTTP & gRPC middleware)
-│   │   ├── outbox/                 # Transactional Outbox Worker, Distributed Lock, DLQ
+│   │   ├── metrics/                # Prometheus RED & Outbox/DB Pool Collector
+│   │   ├── middleware/             # Context Timeout, Security Headers, CORS, Recovery
+│   │   ├── outbox/                 # Transactional Outbox Worker, Distributed Lock, DLQ, Cleaner
+│   │   ├── reconciliation/         # Background Self-Healing & Transaction Reconciliation
 │   │   ├── resilience/             # Distributed Rate Limiting (Sliding Window) & Circuit Breaker
 │   │   ├── response/               # Standardized JSON response helpers
+│   │   ├── shutdown/               # Phased Graceful Shutdown Engine
 │   │   └── telemetry/              # W3C TraceContext propagator & slog TraceHandler
 │   ├── repository/                 # Data Access Layer with caching & DB persistence
 │   └── usecase/                    # Business Logic Layer
 ├── proto/
 │   └── user/v1/user.proto          # Protobuf service definitions
+├── tests/
+│   └── integration/                # End-to-End Testcontainers tests (PostgreSQL + Redis)
 ├── Makefile
 ├── go.mod
 └── README.md
@@ -80,6 +89,11 @@ backend-go/
 - **Security Headers & Strict CORS (`internal/pkg/middleware/security.go`)**: OWASP-aligned response headers (`X-Frame-Options`, `X-Content-Type-Options`, `HSTS`, `CSP`) and fine-grained CORS.
 - **Immutable Audit Trail (`internal/pkg/audit`)**: Captures mutation events with actor, before/after states, IP, user-agent, and trace IDs.
 - **Outbox Retention Cleaner (`internal/pkg/outbox/cleaner.go`)**: Distributed locked background worker that purges processed records to prevent table bloat.
+
+### 8. High Performance & Testability Patterns
+- **Singleflight Cache Stampede Protection (`internal/pkg/cache`)**: Utilizes `golang.org/x/sync/singleflight` to suppress redundant database queries during concurrent cache misses on high-traffic keys.
+- **Self-Healing Reconciliation Engine (`internal/pkg/reconciliation`)**: Background distributed-locked reconciliation daemon to resolve stuck/pending transactions with external providers.
+- **Integration Testing with Testcontainers (`tests/integration`)**: Automated Docker-based integration tests verifying PostgreSQL, Redis, DDL migrations, and Outbox locking end-to-end (`make test-integration`).
 
 ---
 
