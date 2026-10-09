@@ -8,7 +8,14 @@ Production-grade Go backend architecture featuring Gin HTTP, gRPC delivery, tran
 backend-go/
 ├── cmd/
 │   └── api/
-│       └── main.go                 # App entry point (DI & HTTP/gRPC server startup)
+│       ├── main.go                 # App entry point (DI & HTTP/gRPC server startup)
+│       └── pprof.go                # Isolated internal pprof diagnostic server (:6060)
+├── deployments/
+│   ├── docker/                     # Multi-stage hardened Dockerfile
+│   └── k8s/                        # Kubernetes Deployment, Job, NetPol, HPA, PDB manifests
+├── docs/
+│   ├── project.md                  # Comprehensive architecture documentation
+│   └── proto_migration_guide.md    # Centralized Protobuf migration guide
 ├── internal/
 │   ├── config/                     # Configuration loader (.env & system environment)
 │   ├── domain/                     # Domain entities, error types, repository/usecase interfaces
