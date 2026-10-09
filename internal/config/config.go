@@ -1,9 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -14,7 +16,9 @@ type Config struct {
 	// Server & Networking
 	ServerAddress   string        `json:"server_address"`
 	GRPCAddress     string        `json:"grpc_address"`
+	PprofAddress    string        `json:"pprof_address"`
 	AppEnv          string        `json:"app_env"`
+	LogLevel        string        `json:"log_level"`
 	ReadTimeout     time.Duration `json:"read_timeout"`
 	WriteTimeout    time.Duration `json:"write_timeout"`
 	ShutdownTimeout time.Duration `json:"shutdown_timeout"`
@@ -47,16 +51,34 @@ type Config struct {
 	RateLimitWindow    time.Duration `json:"rate_limit_window"`
 }
 
-// LoadConfig loads configuration from environment variables or .env file.
+// LoadConfig loads configuration from environment-specific .env or system environment variables.
 func LoadConfig() *Config {
-	if err := godotenv.Load(); err != nil {
-		slog.Info(".env file not found, fallback to system environment variables")
+	env := os.Getenv("APP_ENV")
+	if env == "" {
+		env = "development"
+	}
+
+	// Try loading environment-specific file first, then fallback to .env
+	envFile := fmt.Sprintf(".env.%s", env)
+	if err := godotenv.Load(envFile); err == nil {
+		slog.Info("Loaded environment configuration file", "file", envFile)
+	} else if err := godotenv.Load(".env"); err == nil {
+		slog.Info("Loaded fallback .env configuration file")
+	} else {
+		slog.Info("No .env file loaded, relying on system environment variables")
+	}
+
+	defaultLogLevel := "info"
+	if strings.ToLower(env) == "development" {
+		defaultLogLevel = "debug"
 	}
 
 	return &Config{
 		ServerAddress:      getEnv("SERVER_ADDRESS", "127.0.0.1:8080"),
 		GRPCAddress:        getEnv("GRPC_ADDRESS", "127.0.0.1:50051"),
-		AppEnv:             getEnv("APP_ENV", "development"),
+		PprofAddress:       getEnv("PPROF_ADDRESS", "127.0.0.1:6060"),
+		AppEnv:             getEnv("APP_ENV", env),
+		LogLevel:           getEnv("LOG_LEVEL", defaultLogLevel),
 		ReadTimeout:        getEnvAsDuration("READ_TIMEOUT", 10*time.Second),
 		WriteTimeout:       getEnvAsDuration("WRITE_TIMEOUT", 10*time.Second),
 		ShutdownTimeout:    getEnvAsDuration("SHUTDOWN_TIMEOUT", 15*time.Second),

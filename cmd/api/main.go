@@ -31,18 +31,30 @@ import (
 )
 
 func main() {
-	// 1. Initialize Structured Logger with Trace context handler
+	// 1. Load application configuration
+	cfg := config.LoadConfig()
+
+	// 2. Initialize Structured Logger with dynamic LogLevel & Trace context handler
+	var logLevel slog.Level
+	switch cfg.LogLevel {
+	case "debug":
+		logLevel = slog.LevelDebug
+	case "warn":
+		logLevel = slog.LevelWarn
+	case "error":
+		logLevel = slog.LevelError
+	default:
+		logLevel = slog.LevelInfo
+	}
+
 	baseHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: logLevel,
 	})
 	traceHandler := telemetry.NewTraceHandler(baseHandler)
 	slog.SetDefault(slog.New(traceHandler))
 
-	// 2. Load application configuration
-	cfg := config.LoadConfig()
-
 	// 3. Start isolated internal pprof diagnostic server
-	pprofSrv := StartPprofServer("127.0.0.1:6060")
+	pprofSrv := StartPprofServer(cfg.PprofAddress)
 
 	// 4. Set Gin Mode
 	if cfg.AppEnv == "production" {
