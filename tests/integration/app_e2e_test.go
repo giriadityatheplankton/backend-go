@@ -16,8 +16,8 @@ import (
 	orderv1 "backend-go/gen/proto/order/v1"
 	"backend-go/internal/app"
 	"backend-go/internal/config"
-	"backend-go/internal/platform/grpcclient"
-	"backend-go/internal/platform/observability/requestid"
+	"backend-go/internal/pkg/grpcclient"
+	"backend-go/internal/pkg/observability/requestid"
 	"backend-go/migrations"
 
 	"github.com/redis/go-redis/v9"

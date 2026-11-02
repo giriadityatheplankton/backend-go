@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"backend-go/internal/config"
-	"backend-go/internal/platform/database"
-	"backend-go/internal/platform/database/migrate"
+	"backend-go/internal/pkg/database"
+	"backend-go/internal/pkg/database/migrate"
 	"backend-go/migrations"
 
 	_ "github.com/jackc/pgx/v5/stdlib"

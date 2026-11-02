@@ -11,11 +11,11 @@ import (
 	"testing/fstest"
 	"time"
 
-	"backend-go/internal/platform/database"
-	"backend-go/internal/platform/database/migrate"
-	"backend-go/internal/platform/messaging"
-	"backend-go/internal/platform/messaging/inbox"
-	"backend-go/internal/platform/outbox"
+	"backend-go/internal/pkg/database"
+	"backend-go/internal/pkg/database/migrate"
+	"backend-go/internal/pkg/messaging"
+	"backend-go/internal/pkg/messaging/inbox"
+	"backend-go/internal/pkg/outbox"
 	"backend-go/migrations"
 
 	"github.com/stretchr/testify/assert"

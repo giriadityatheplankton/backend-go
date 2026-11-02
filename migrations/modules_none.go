@@ -2,6 +2,6 @@
 
 package migrations
 
-import "backend-go/internal/platform/database/migrate"
+import "backend-go/internal/pkg/database/migrate"
 
 func moduleSources() []migrate.Source { return nil }

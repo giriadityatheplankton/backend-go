@@ -10,7 +10,7 @@ import (
 
 	"backend-go/internal/modules/user/domain"
 	"backend-go/internal/modules/user/usecase/port"
-	"backend-go/internal/platform/cache"
+	"backend-go/internal/pkg/cache"
 )
 
 var _ port.UserRepository = (*CachedUserRepository)(nil)

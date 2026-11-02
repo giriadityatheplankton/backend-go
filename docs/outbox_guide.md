@@ -1,6 +1,6 @@
 # Transactional outbox
 
-`internal/platform/outbox` memindahkan event yang ditulis dalam transaksi bisnis ke broker tanpa dual-write.
+`internal/pkg/outbox` memindahkan event yang ditulis dalam transaksi bisnis ke broker tanpa dual-write.
 
 ## Menulis event (di modul)
 

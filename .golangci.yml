@@ -39,7 +39,7 @@ linters:
           deny:
             - pkg: backend-go/internal/modules/*/usecase
               desc: domain must not depend on use cases
-            - pkg: backend-go/internal/platform
+            - pkg: backend-go/internal/pkg
               desc: domain must not depend on infrastructure
             - pkg: github.com/gin-gonic/gin
               desc: domain must not depend on a web framework
@@ -51,7 +51,7 @@ linters:
           list-mode: lax
           files: ["**/internal/modules/*/usecase/**", "!**/*_test.go"]
           deny:
-            - pkg: backend-go/internal/platform
+            - pkg: backend-go/internal/pkg
               desc: use cases talk to infrastructure only through ports
             - pkg: backend-go/internal/modules/*/adapter
               desc: use cases must not import adapters
@@ -67,12 +67,12 @@ linters:
               desc: generated transport types belong to adapters
         platform:
           list-mode: lax
-          files: ["**/internal/platform/**", "!**/*_test.go"]
+          files: ["**/internal/pkg/**", "!**/*_test.go"]
           deny:
             - pkg: backend-go/internal/modules
-              desc: platform is domain-agnostic
+              desc: pkg is domain-agnostic
             - pkg: backend-go/internal/app
-              desc: platform must not depend on the composition root
+              desc: pkg must not depend on the composition root
             - pkg: backend-go/internal/config
               desc: pass configuration values as parameters
   exclusions:

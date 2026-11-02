@@ -6,7 +6,7 @@ package migrations
 import (
 	"embed"
 
-	"backend-go/internal/platform/database/migrate"
+	"backend-go/internal/pkg/database/migrate"
 )
 
 //go:embed platform/*.sql

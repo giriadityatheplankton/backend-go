@@ -1,9 +1,9 @@
 package app
 
 import (
-	"backend-go/internal/platform/httpserver"
-	"backend-go/internal/platform/messaging"
-	"backend-go/internal/platform/reconciliation"
+	"backend-go/internal/pkg/httpserver"
+	"backend-go/internal/pkg/messaging"
+	"backend-go/internal/pkg/reconciliation"
 
 	"github.com/gin-gonic/gin"
 	"google.golang.org/grpc"

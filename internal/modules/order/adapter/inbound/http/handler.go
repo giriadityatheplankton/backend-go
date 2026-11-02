@@ -11,8 +11,8 @@ import (
 
 	"backend-go/internal/modules/order/usecase"
 	"backend-go/internal/modules/order/usecase/port"
-	"backend-go/internal/platform/httpserver/respond"
-	"backend-go/internal/platform/idempotency"
+	"backend-go/internal/pkg/httpserver/respond"
+	"backend-go/internal/pkg/idempotency"
 
 	"github.com/gin-gonic/gin"
 )

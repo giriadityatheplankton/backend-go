@@ -9,7 +9,7 @@ import (
 
 	"backend-go/internal/modules/order/domain"
 	"backend-go/internal/modules/order/usecase/port"
-	"backend-go/internal/platform/cache"
+	"backend-go/internal/pkg/cache"
 )
 
 var _ port.OrderRepository = (*CachedOrderRepository)(nil)

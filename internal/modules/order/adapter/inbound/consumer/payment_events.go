@@ -10,7 +10,7 @@ import (
 	"fmt"
 
 	"backend-go/internal/modules/order/domain"
-	"backend-go/internal/platform/messaging"
+	"backend-go/internal/pkg/messaging"
 )
 
 type orderPayer interface {

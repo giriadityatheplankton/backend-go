@@ -42,7 +42,7 @@ backend-go/
 │   │       ├── adapter/inbound/    # http, grpc, consumer, job
 │   │       ├── adapter/outbound/   # postgres, redis (data access, caching)
 │   │       └── module.go
-│   └── platform/
+│   └── pkg/
 │       ├── audit/                  # Immutable Audit Trail logging
 │       ├── auth/                   # Principal, JWT / static-token auth (HTTP & gRPC)
 │       ├── cache/                  # Singleflight Stampede-Protected Cache Manager
@@ -80,7 +80,7 @@ for the full license text.
 
 ## Enterprise Modules & Features
 
-### 1. Advanced Outbox Worker & Redis Streams (`internal/platform/outbox`, `internal/platform/messaging`)
+### 1. Advanced Outbox Worker & Redis Streams (`internal/pkg/outbox`, `internal/pkg/messaging`)
 - **Row Leasing (`worker.go`)**: Events are claimed in PostgreSQL with `FOR UPDATE SKIP LOCKED` and a lease, so multi-pod safety no longer depends on Redis. Expired leases are reclaimed after a crash.
 - **Distributed Lock (`lock.go`)**: Redis `SET NX PX` with atomic Lua release/extension, kept for singleton jobs (cleaner, reconciliation).
 - **Partitioned Batching (`worker.go`)**: Multi-partition worker pool for high-throughput event processing, with optional per-aggregate ordering.
@@ -89,45 +89,45 @@ for the full license text.
 - **Trace Context Propagation**: Preserves W3C `traceparent` and `X-Request-ID` from request headers to message broker payload headers.
 - **Persistence**: `memory_repository.go` provides the in-memory test adapter and `postgres_repository.go` provides PostgreSQL persistence backed by `database/sql`. The PostgreSQL repository can share the business transaction when saving events. See the [Outbox Package Guide](docs/outbox_guide.md) and [Messaging Guide](docs/messaging_guide.md).
 
-### 2. Idempotency Engine (`internal/platform/idempotency`)
+### 2. Idempotency Engine (`internal/pkg/idempotency`)
 - **Three layers**: edge (Redis), database (`UNIQUE` key + fingerprint, source of truth), and consumer (inbox). See the [Idempotency Guide](docs/idempotency_guide.md).
 - **HTTP Middleware (`HTTPMiddleware`)**: Intercepts requests with the `Idempotency-Key` header (`X-Idempotency-Key` still accepted), scoped per authenticated principal, holds a fenced lease for in-flight processing, caches response payloads, and replays completed responses on duplicate calls.
 - **gRPC Interceptor (`UnaryServerInterceptor`)**: Intercepts gRPC calls carrying `idempotency-key` metadata, preventing duplicate execution and replaying the cached response with its correct Protobuf type.
 
-### 3. Distributed Tracing & Telemetry (`internal/platform/observability/telemetry`)
+### 3. Distributed Tracing & Telemetry (`internal/pkg/observability/telemetry`)
 - **W3C TraceContext Propagator (`trace.go`)**: Seamless context injection/extraction across HTTP headers, gRPC metadata, broker headers, and Go `context.Context`.
 - **Structured Logger Handler (`slog_handler.go`)**: Decorates `slog.Handler` to automatically attach `trace_id`, `span_id`, and `request_id` to every structured log entry.
 
-### 4. Resiliency & Rate Limiting (`internal/platform/resilience`)
+### 4. Resiliency & Rate Limiting (`internal/pkg/resilience`)
 - **Distributed Sliding Window Rate Limiter (`ratelimit.go`)**: Enforces rate limits per authenticated principal (tenant/user) or per-IP using Redis Sorted Sets and atomic Lua scripts. Client-supplied `X-Tenant-ID` / `X-User-ID` headers are not trusted.
 - **Circuit Breaker (`circuitbreaker.go`)**: Powered by `github.com/sony/gobreaker/v2` with state machine (`CLOSED`, `OPEN`, `HALF_OPEN`) protecting the outbox publisher and downstream HTTP and gRPC service integrations with automatic fallback execution.
 - **gRPC Resiliency Interceptors (`grpc.go`)**: Native `UnaryServerRateLimitInterceptor` and `UnaryClientCircuitBreakerInterceptor`.
 
-### 5. Database Optimization & Multi-Tenancy (`internal/platform/database`)
+### 5. Database Optimization & Multi-Tenancy (`internal/pkg/database`)
 - **Read/Write Splitting (`DBGroup`)**: Menyediakan `Write()` untuk mutasi, `ReadPrimary()` untuk critical reads, dan `Read()` untuk query toleran-stale yang dibagi round-robin ke read replicas yang sehat.
 - **Transactions (`tx.go`)**: `TxManager.WithinTx` with automatic retry of serialization failures and deadlocks.
 - **Critical Read Guidance**: Gunakan PostgreSQL primary untuk read-after-write dan keputusan critical; lewati cache Redis untuk data authoritative. Lihat [Panduan PostgreSQL Replication Lag](docs/postgres_replication_guide.md) dan [Panduan Redis Replication Lag](docs/redis_replication_guide.md) untuk panduan spesifik masing-masing datastore.
 - **Optional examples**: sample user/order modules, workflows, migrations, and guides are excluded from the default build. Run with `make run-examples`, test with `make test-examples`, or remove all example code in one step with `make remove-examples`.
 - **Dynamic Tenant Router (`DynamicTenantRouter`)**: Resolves tenant-specific database connection pools dynamically based on `TenantID` in context. Unknown tenants return an error unless the default fallback is enabled explicitly.
-- **Embedded Migration Engine (`internal/platform/database/migrate`, `migrations/`)**: Programmatic DDL execution using `go:embed` SQL files with transaction safety, advisory locking, checksums, and version tracking (`schema_history`).
+- **Embedded Migration Engine (`internal/pkg/database/migrate`, `migrations/`)**: Programmatic DDL execution using `go:embed` SQL files with transaction safety, advisory locking, checksums, and version tracking (`schema_history`).
 
 ### 6. Kubernetes Probes, Observability & Graceful Shutdown
-- **Health Probes (`internal/platform/health`)**: Non-blocking asynchronous checks for Primary/Replica DB and Redis at `/healthz/live` and `/healthz/ready` on the admin port (`:9090`). Replica and cache failures are reported as degraded, not unready.
-- **Prometheus Metrics (`internal/platform/observability/metrics`)**: Exposes HTTP/gRPC RED metrics, idempotency, outbox, consumer, circuit breaker, and DB connection pool stats at `/metrics` on the admin port.
-- **Phased Graceful Shutdown (`internal/platform/shutdown`)**: Multi-phase termination handling SIGTERM/SIGINT (Readiness flip -> Ingress drain -> Listener shutdown -> Worker drain -> Client cleanup).
-- **Context Deadlines & Timeouts (`internal/platform/httpserver/middleware/timeout.go`)**: Global request timeout injection with downstream deadline propagation.
+- **Health Probes (`internal/pkg/health`)**: Non-blocking asynchronous checks for Primary/Replica DB and Redis at `/healthz/live` and `/healthz/ready` on the admin port (`:9090`). Replica and cache failures are reported as degraded, not unready.
+- **Prometheus Metrics (`internal/pkg/observability/metrics`)**: Exposes HTTP/gRPC RED metrics, idempotency, outbox, consumer, circuit breaker, and DB connection pool stats at `/metrics` on the admin port.
+- **Phased Graceful Shutdown (`internal/pkg/shutdown`)**: Multi-phase termination handling SIGTERM/SIGINT (Readiness flip -> Ingress drain -> Listener shutdown -> Worker drain -> Client cleanup).
+- **Context Deadlines & Timeouts (`internal/pkg/httpserver/middleware/timeout.go`)**: Global request timeout injection with downstream deadline propagation.
 - **Go Runtime & Concurrency Hardening**: `automaxprocs` integration for Kubernetes CPU quota alignment and pprof served only from the admin server when `PPROF_ENABLED=true`.
 
 ### 7. Security, Auditing & Panic Recovery
-- **Panic Recovery Middleware (`internal/platform/httpserver/middleware/recovery.go`)**: Recovers runtime panics across Gin and gRPC with structured JSON logs preserving contextual trace identifiers; panic details are never returned to clients.
-- **Security Headers & Strict CORS (`internal/platform/httpserver/middleware/security.go`)**: OWASP-aligned response headers (`X-Frame-Options`, `X-Content-Type-Options`, `HSTS`, `CSP`) and deny-by-default CORS.
-- **Authentication (`internal/platform/auth`)**: JWT or static-token auth that places a `Principal` in the context for HTTP and gRPC.
-- **Audit Trail (`internal/platform/audit`)**: Catat aksi penting ke structured log saja atau simpan secara persisten di PostgreSQL; gunakan transaksi yang sama dengan perubahan bisnis jika audit wajib atomik. Lihat [Panduan Paket Audit](docs/audit_guide.md).
-- **Outbox Retention Cleaner (`internal/platform/outbox/cleaner.go`)**: Distributed locked background worker that purges processed records to prevent table bloat.
+- **Panic Recovery Middleware (`internal/pkg/httpserver/middleware/recovery.go`)**: Recovers runtime panics across Gin and gRPC with structured JSON logs preserving contextual trace identifiers; panic details are never returned to clients.
+- **Security Headers & Strict CORS (`internal/pkg/httpserver/middleware/security.go`)**: OWASP-aligned response headers (`X-Frame-Options`, `X-Content-Type-Options`, `HSTS`, `CSP`) and deny-by-default CORS.
+- **Authentication (`internal/pkg/auth`)**: JWT or static-token auth that places a `Principal` in the context for HTTP and gRPC.
+- **Audit Trail (`internal/pkg/audit`)**: Catat aksi penting ke structured log saja atau simpan secara persisten di PostgreSQL; gunakan transaksi yang sama dengan perubahan bisnis jika audit wajib atomik. Lihat [Panduan Paket Audit](docs/audit_guide.md).
+- **Outbox Retention Cleaner (`internal/pkg/outbox/cleaner.go`)**: Distributed locked background worker that purges processed records to prevent table bloat.
 
 ### 8. High Performance & Testability Patterns
-- **Singleflight Cache Stampede Protection (`internal/platform/cache`)**: Utilizes `golang.org/x/sync/singleflight` to suppress redundant database queries during concurrent cache misses on high-traffic keys.
-- **Self-Healing Reconciliation Engine (`internal/platform/reconciliation`)**: Background distributed-locked reconciliation daemon to resolve stuck/pending transactions with external providers. See the [Reconciliation Guide](docs/reconciliation_guide.md) for implementing and registering jobs.
+- **Singleflight Cache Stampede Protection (`internal/pkg/cache`)**: Utilizes `golang.org/x/sync/singleflight` to suppress redundant database queries during concurrent cache misses on high-traffic keys.
+- **Self-Healing Reconciliation Engine (`internal/pkg/reconciliation`)**: Background distributed-locked reconciliation daemon to resolve stuck/pending transactions with external providers. See the [Reconciliation Guide](docs/reconciliation_guide.md) for implementing and registering jobs.
 - **Architecture Tests (`tests/arch`)**: Fail the build when a layer imports outward (for example a use case importing `database/sql`).
 - **Integration Testing (`tests/integration`)**: Automated integration tests verifying PostgreSQL, Redis, DDL migrations, Outbox claiming, and the end-to-end HTTP/gRPC flow (`make test-integration`).
 
@@ -153,7 +153,7 @@ Ready-to-use production assets located under `deployments/`:
   - Contains Gin controllers and routes; sample routes are opt-in with the `examples` build tag.
 - **gRPC adapters (`internal/modules/<module>/adapter/inbound/grpc`)**:
   - Contains gRPC service implementations; sample handlers are opt-in with the `examples` build tag.
-- **Server infrastructure** lives in `internal/platform/httpserver` and `internal/platform/grpcserver`.
+- **Server infrastructure** lives in `internal/pkg/httpserver` and `internal/pkg/grpcserver`.
 
 ---
 

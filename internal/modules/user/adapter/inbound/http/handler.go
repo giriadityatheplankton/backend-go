@@ -10,8 +10,8 @@ import (
 
 	"backend-go/internal/modules/user/domain"
 	"backend-go/internal/modules/user/usecase"
-	"backend-go/internal/platform/httpserver"
-	"backend-go/internal/platform/httpserver/respond"
+	"backend-go/internal/pkg/httpserver"
+	"backend-go/internal/pkg/httpserver/respond"
 
 	"github.com/gin-gonic/gin"
 )

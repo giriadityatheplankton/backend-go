@@ -1,12 +1,12 @@
 package app
 
 import (
-	"backend-go/internal/platform/auth"
-	"backend-go/internal/platform/grpcserver"
-	"backend-go/internal/platform/httpserver/middleware"
-	"backend-go/internal/platform/idempotency"
-	"backend-go/internal/platform/observability/telemetry"
-	"backend-go/internal/platform/resilience"
+	"backend-go/internal/pkg/auth"
+	"backend-go/internal/pkg/grpcserver"
+	"backend-go/internal/pkg/httpserver/middleware"
+	"backend-go/internal/pkg/idempotency"
+	"backend-go/internal/pkg/observability/telemetry"
+	"backend-go/internal/pkg/resilience"
 
 	"google.golang.org/grpc"
 )

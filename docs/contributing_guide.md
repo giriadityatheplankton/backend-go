@@ -20,14 +20,14 @@ Skeleton ini adalah template: hanya sertakan kemampuan yang berguna bagi hampir 
 | `internal/app` | Composition root: infra, HTTP, gRPC, worker, shutdown |
 | `internal/kernel` | `apperr`, `clock`, `ids` (hanya stdlib) |
 | `internal/modules/<m>` | `domain`, `usecase/{port}`, `adapter/{inbound,outbound}`, `module.go` |
-| `internal/platform` | Infrastruktur reusable (tidak boleh meng-import `modules`/`app`/`config`) |
+| `internal/pkg` | Infrastruktur reusable (tidak boleh meng-import `modules`/`app`/`config`) |
 | `api/proto`, `gen/proto` | Kontrak gRPC dan kode generate |
 | `migrations/{platform,<m>}` | SQL embedded per pemilik |
 | `tests/arch`, `tests/integration` | Aturan arsitektur; Postgres+Redis sungguhan |
 
 ## Modul contoh
 
-`order` dan `user` memakai build tag `examples` agar skeleton default kosong. `make remove-examples` menghapusnya (diverifikasi: skeleton tetap build dan lulus tes tanpa mereka). Saat menambah contoh baru, taruh di dalam modul contoh, bukan di `platform`.
+`order` dan `user` memakai build tag `examples` agar skeleton default kosong. `make remove-examples` menghapusnya (diverifikasi: skeleton tetap build dan lulus tes tanpa mereka). Saat menambah contoh baru, taruh di dalam modul contoh, bukan di `pkg`.
 
 ## Alur kerja
 

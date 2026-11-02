@@ -15,8 +15,8 @@ import (
 	"os"
 	"testing"
 
-	"backend-go/internal/platform/database"
-	"backend-go/internal/platform/database/migrate"
+	"backend-go/internal/pkg/database"
+	"backend-go/internal/pkg/database/migrate"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/redis/go-redis/v9"

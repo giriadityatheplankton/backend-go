@@ -12,7 +12,7 @@ import (
 
 	"backend-go/internal/modules/order/domain"
 	"backend-go/internal/modules/order/usecase/port"
-	"backend-go/internal/platform/database"
+	"backend-go/internal/pkg/database"
 )
 
 var _ port.OrderRepository = (*OrderRepository)(nil)

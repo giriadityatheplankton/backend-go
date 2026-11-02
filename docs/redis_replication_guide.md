@@ -2,7 +2,7 @@
 
 Panduan ini menjelaskan routing baca Redis, dampak replication lag, dan pilihan
 untuk critical path. Panduan ini membahas client Redis yang dibuat oleh
-`internal/platform/redisclient`; bukan pengganti dokumentasi topologi managed Redis
+`internal/pkg/redisclient`; bukan pengganti dokumentasi topologi managed Redis
 yang digunakan oleh deployment.
 
 ## Mode client yang didukung

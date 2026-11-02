@@ -10,9 +10,9 @@ Client retry ─► L1 Edge (Redis)         dedupe cepat, replay respons, tahan 
 
 | Lapisan | Mencegah | Gagal jika dilewati |
 | --- | --- | --- |
-| L1 `platform/idempotency` | Eksekusi ganda dari retry/konkuren, beban DB | Redis hilang (evict, failover, `FLUSHALL`) → hanya L2 yang menyelamatkan |
+| L1 `pkg/idempotency` | Eksekusi ganda dari retry/konkuren, beban DB | Redis hilang (evict, failover, `FLUSHALL`) → hanya L2 yang menyelamatkan |
 | L2 use case + repository | Data ganda | — (ini yang menentukan) |
-| L3 `platform/messaging/inbox` | Efek ganda dari pesan at-least-once | Redelivery menjalankan efek dua kali |
+| L3 `pkg/messaging/inbox` | Efek ganda dari pesan at-least-once | Redelivery menjalankan efek dua kali |
 
 **Aturan:** setiap operasi yang menulis state wajib punya L2; setiap consumer wajib lewat L3; L1 bersifat opsional/optimasi.
 
@@ -76,4 +76,4 @@ Lihat [messaging_guide.md](messaging_guide.md). Ringkasnya: `BEGIN → INSERT in
 
 ## Test yang menjaga perilaku ini
 
-`platform/idempotency/storetest` (kontrak yang sama dijalankan untuk memory dan Redis): satu pemenang dari 32 goroutine, lease kedaluwarsa tidak bisa menimpa/menghapus lease baru, record tidak ter-alias. `middleware_test.go` / `grpc_test.go`: eksekusi tepat sekali, klien putus, panic, scope antar principal, tipe respons replay. `tests/integration/app_e2e_test.go`: Redis di-flush di tengah jalan, L2 tetap mencegah duplikasi.
+`pkg/idempotency/storetest` (kontrak yang sama dijalankan untuk memory dan Redis): satu pemenang dari 32 goroutine, lease kedaluwarsa tidak bisa menimpa/menghapus lease baru, record tidak ter-alias. `middleware_test.go` / `grpc_test.go`: eksekusi tepat sekali, klien putus, panic, scope antar principal, tipe respons replay. `tests/integration/app_e2e_test.go`: Redis di-flush di tengah jalan, L2 tetap mencegah duplikasi.

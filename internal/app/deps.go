@@ -3,8 +3,8 @@ package app
 import (
 	"time"
 
-	"backend-go/internal/platform/cache"
-	"backend-go/internal/platform/database"
+	"backend-go/internal/pkg/cache"
+	"backend-go/internal/pkg/database"
 )
 
 // moduleDeps is what app/ offers to module constructors (infrastructure only).

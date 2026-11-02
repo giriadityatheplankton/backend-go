@@ -9,8 +9,8 @@ import (
 	orderv1 "backend-go/gen/proto/order/v1"
 	"backend-go/internal/modules/order/usecase"
 	"backend-go/internal/modules/order/usecase/port"
-	"backend-go/internal/platform/grpcserver"
-	"backend-go/internal/platform/idempotency"
+	"backend-go/internal/pkg/grpcserver"
+	"backend-go/internal/pkg/idempotency"
 )
 
 type (

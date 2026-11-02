@@ -48,7 +48,7 @@ Pemetaan [review.md](../review.md) → perubahan. Struktur folder mengikuti [rec
 | Metrics `unmatched` untuk 404 | ✅ |
 | Envelope + `request_id`/`details`; `DisallowUnknownFields`; batas body global | ✅ |
 | RFC 9457 Problem Details | ⏭️ envelope dipertahankan, ditambah `request_id` dan `details` |
-| Auth + `Principal`; rate limit & scoping dari principal | ✅ `platform/auth` (JWT HS/RS, static token) |
+| Auth + `Principal`; rate limit & scoping dari principal | ✅ `pkg/auth` (JWT HS/RS, static token) |
 
 ## gRPC (§6)
 
@@ -107,7 +107,7 @@ Semua baris tabel ✅ kecuali: **mTLS** 🟡 (server TLS tersedia lewat `GRPC_TL
 
 ## Struktur (recommend-folder-structure.md)
 
-✅ `cmd/{api,worker,migrate}`, `internal/{app,config,kernel,modules,platform}`, `api/`, `gen/`, `migrations/`, `tests/{arch,integration}`, `deployments/{docker,k8s/{base,overlays}}`. Pelanggaran §8.1 diperbaiki: interface tidak lagi di `domain`; use case tidak meng-import infrastruktur; transaksi ditentukan use case lewat `port.TxManager`; waktu dan ID di-inject; cache menjadi decorator; DTO gRPC buatan tangan diganti kode generate; tag `json` tidak ada di entity. `go-arch-lint` (opsional) digantikan test Go `tests/arch` yang berjalan di setiap `go test`.
+✅ `cmd/{api,worker,migrate}`, `internal/{app,config,kernel,modules,pkg}`, `api/`, `gen/`, `migrations/`, `tests/{arch,integration}`, `deployments/{docker,k8s/{base,overlays}}`. Pelanggaran §8.1 diperbaiki: interface tidak lagi di `domain`; use case tidak meng-import infrastruktur; transaksi ditentukan use case lewat `port.TxManager`; waktu dan ID di-inject; cache menjadi decorator; DTO gRPC buatan tangan diganti kode generate; tag `json` tidak ada di entity. `go-arch-lint` (opsional) digantikan test Go `tests/arch` yang berjalan di setiap `go test`.
 
 ## Hasil verifikasi lokal
 

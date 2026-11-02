@@ -3,7 +3,7 @@
 // also checks files behind build tags (for example the examples modules).
 //
 //	kernel  <-  modules/<m>/domain  <-  modules/<m>/usecase  <-  modules/<m>/adapter  <-  modules/<m>  <-  app, cmd
-//	platform never imports modules, app or config
+//	pkg never imports modules, app or config
 package arch_test
 
 import (
@@ -30,7 +30,7 @@ const (
 	inbound
 	outbound
 	moduleRoot
-	platform
+	pkg
 	appLayer
 	config
 	cmdLayer
@@ -59,8 +59,8 @@ func classify(dir string) (layer, string) {
 	switch {
 	case strings.HasPrefix(dir, "internal/kernel"):
 		return kernel, ""
-	case strings.HasPrefix(dir, "internal/platform"):
-		return platform, ""
+	case strings.HasPrefix(dir, "internal/pkg"):
+		return pkg, ""
 	case dir == "internal/app":
 		return appLayer, ""
 	case dir == "internal/config":
@@ -146,10 +146,10 @@ func violation(from layer, fromMod, imp string) string {
 		if crossModule || toLayer == appLayer || toLayer == config {
 			return "a module may not import other modules, app or config"
 		}
-	case platform:
+	case pkg:
 		if toLayer == moduleRoot || toLayer == domain || toLayer == usecase || toLayer == inbound || toLayer == outbound ||
 			toLayer == appLayer || toLayer == config {
-			return "platform is domain-agnostic: it must not import modules, app or config"
+			return "pkg is domain-agnostic: it must not import modules, app or config"
 		}
 	}
 	return ""
@@ -215,7 +215,7 @@ func TestClassifierSelfCheck(t *testing.T) {
 		{"internal/modules/order/adapter/inbound/http", inbound, "order"},
 		{"internal/modules/order/adapter/outbound/postgres", outbound, "order"},
 		{"internal/modules/order", moduleRoot, "order"},
-		{"internal/platform/outbox", platform, ""},
+		{"internal/pkg/outbox", pkg, ""},
 		{"internal/kernel/apperr", kernel, ""},
 	} {
 		l, m := classify(c.dir)
@@ -232,13 +232,13 @@ func TestClassifierSelfCheck(t *testing.T) {
 		{domain, "order", mod + "internal/modules/order/usecase"},
 		{domain, "order", "github.com/gin-gonic/gin"},
 		{usecase, "order", "database/sql"},
-		{usecase, "order", mod + "internal/platform/database"},
+		{usecase, "order", mod + "internal/pkg/database"},
 		{usecase, "order", mod + "internal/modules/user/domain"},
 		{inbound, "order", mod + "internal/modules/order/adapter/outbound/postgres"},
 		{outbound, "order", mod + "internal/modules/order/adapter/inbound/http"},
-		{platform, "", mod + "internal/modules/order"},
-		{platform, "", mod + "internal/config"},
-		{kernel, "", mod + "internal/platform/outbox"},
+		{pkg, "", mod + "internal/modules/order"},
+		{pkg, "", mod + "internal/config"},
+		{kernel, "", mod + "internal/pkg/outbox"},
 		{moduleRoot, "order", mod + "internal/modules/user"},
 	}
 	for _, b := range bad {
@@ -253,7 +253,7 @@ func TestClassifierSelfCheck(t *testing.T) {
 	}{
 		{usecase, "order", mod + "internal/modules/order/domain"},
 		{usecase, "order", mod + "internal/kernel/clock"},
-		{inbound, "order", mod + "internal/platform/httpserver"},
+		{inbound, "order", mod + "internal/pkg/httpserver"},
 		{inbound, "order", mod + "internal/modules/order/usecase"},
 		{outbound, "order", mod + "internal/modules/order/usecase/port"},
 		{moduleRoot, "order", mod + "internal/modules/order/adapter/inbound/http"},

@@ -10,8 +10,8 @@ import (
 
 	"backend-go/internal/modules/order/domain"
 	"backend-go/internal/modules/order/usecase/port"
-	"backend-go/internal/platform/database"
-	"backend-go/internal/platform/outbox"
+	"backend-go/internal/pkg/database"
+	"backend-go/internal/pkg/outbox"
 )
 
 var _ port.EventOutbox = (*EventOutbox)(nil)

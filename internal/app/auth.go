@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"backend-go/internal/config"
-	"backend-go/internal/platform/auth"
-	"backend-go/internal/platform/idempotency"
+	"backend-go/internal/pkg/auth"
+	"backend-go/internal/pkg/idempotency"
 )
 
 // buildAuthenticator returns nil for AUTH_MODE=none (development only; config

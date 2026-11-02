@@ -3,7 +3,7 @@
 package http
 
 import (
-	"backend-go/internal/platform/httpserver"
+	"backend-go/internal/pkg/httpserver"
 
 	"github.com/gin-gonic/gin"
 )

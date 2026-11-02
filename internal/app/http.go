@@ -3,11 +3,11 @@ package app
 import (
 	"time"
 
-	"backend-go/internal/platform/auth"
-	"backend-go/internal/platform/httpserver"
-	"backend-go/internal/platform/httpserver/middleware"
-	"backend-go/internal/platform/idempotency"
-	"backend-go/internal/platform/resilience"
+	"backend-go/internal/pkg/auth"
+	"backend-go/internal/pkg/httpserver"
+	"backend-go/internal/pkg/httpserver/middleware"
+	"backend-go/internal/pkg/idempotency"
+	"backend-go/internal/pkg/resilience"
 
 	"github.com/gin-gonic/gin"
 )

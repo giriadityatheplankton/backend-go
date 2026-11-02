@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"backend-go/internal/config"
-	"backend-go/internal/platform/cache"
-	"backend-go/internal/platform/database"
-	"backend-go/internal/platform/health"
-	"backend-go/internal/platform/observability/metrics"
-	"backend-go/internal/platform/redisclient"
+	"backend-go/internal/pkg/cache"
+	"backend-go/internal/pkg/database"
+	"backend-go/internal/pkg/health"
+	"backend-go/internal/pkg/observability/metrics"
+	"backend-go/internal/pkg/redisclient"
 
 	"github.com/redis/go-redis/v9"
 )

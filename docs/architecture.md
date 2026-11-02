@@ -14,16 +14,16 @@ Dependensi kode sumber hanya boleh mengarah ke dalam (Dependency Rule, Clean Arc
                                    ▼
                           internal/kernel                          apperr, clock, ids — hanya stdlib
 
- internal/platform  ◄── dipakai adapter dan app; TIDAK PERNAH meng-import modules, app, atau config
+ internal/pkg  ◄── dipakai adapter dan app; TIDAK PERNAH meng-import modules, app, atau config
 ```
 
 | Lapisan | Boleh meng-import | Dilarang |
 | --- | --- | --- |
-| `domain` | stdlib, `kernel`, domain sendiri | semua framework, `usecase`, `platform` |
-| `usecase` | `kernel`, `domain`, `usecase/port` | `database/sql`, gin, grpc, redis, `platform`, `gen`, modul lain |
-| `adapter/inbound` | `usecase`, `domain`, `platform`, `gen`, gin, grpc | `adapter/outbound`, `app`, `config`, modul lain |
-| `adapter/outbound` | `usecase/port`, `domain`, `platform`, driver | `adapter/inbound`, `app`, `config`, modul lain |
-| `platform` | stdlib, `kernel`, library, sesama `platform` | `modules`, `app`, `config` |
+| `domain` | stdlib, `kernel`, domain sendiri | semua framework, `usecase`, `pkg` |
+| `usecase` | `kernel`, `domain`, `usecase/port` | `database/sql`, gin, grpc, redis, `pkg`, `gen`, modul lain |
+| `adapter/inbound` | `usecase`, `domain`, `pkg`, `gen`, gin, grpc | `adapter/outbound`, `app`, `config`, modul lain |
+| `adapter/outbound` | `usecase/port`, `domain`, `pkg`, driver | `adapter/inbound`, `app`, `config`, modul lain |
+| `pkg` | stdlib, `kernel`, library, sesama `pkg` | `modules`, `app`, `config` |
 
 Aturan ini dijalankan di setiap `go test` oleh `tests/arch/arch_test.go` (membaca import, termasuk file ber-build-tag) dan di lint oleh `depguard` (`.golangci.yml`).
 
@@ -34,12 +34,12 @@ Aturan ini dijalankan di setiap `go test` oleh `tests/arch/arch_test.go` (membac
 | Invariant bisnis, state machine | `domain` |
 | Alur + batas transaksi | `usecase/*.go` lewat `port.TxManager` |
 | Idempotency bisnis (key + fingerprint → hasil sama) | use case + `UNIQUE` di repository Postgres (lapisan 2) |
-| Idempotency edge (retry/concurrent) | `platform/idempotency`, dipasang di `app/` |
-| Idempotency consumer | `platform/messaging/inbox`, membungkus handler di `app/` |
+| Idempotency edge (retry/concurrent) | `pkg/idempotency`, dipasang di `app/` |
+| Idempotency consumer | `pkg/messaging/inbox`, membungkus handler di `app/` |
 | Serialisasi event ke outbox | `adapter/outbound/postgres/outbox.go` |
 | Cache | decorator di `adapter/outbound/redis` (tanpa mengubah use case) |
 | Error → HTTP status / gRPC code | `kernel/apperr` dipetakan di `respond.Fail` dan `grpcserver.Error` |
-| Auth, rate limit, tracing, metrics | `platform/*`, dirangkai di `app/` |
+| Auth, rate limit, tracing, metrics | `pkg/*`, dirangkai di `app/` |
 
 ## Alur proses
 

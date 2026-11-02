@@ -10,7 +10,7 @@ import (
 	userv1 "backend-go/gen/proto/user/v1"
 	"backend-go/internal/kernel/apperr"
 	"backend-go/internal/modules/user/usecase"
-	"backend-go/internal/platform/grpcserver"
+	"backend-go/internal/pkg/grpcserver"
 )
 
 type userGetter interface {

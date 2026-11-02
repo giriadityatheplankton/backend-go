@@ -6,12 +6,12 @@ import (
 	"os"
 	"time"
 
-	"backend-go/internal/platform/messaging"
-	"backend-go/internal/platform/messaging/inbox"
-	"backend-go/internal/platform/messaging/redisstream"
-	"backend-go/internal/platform/outbox"
-	"backend-go/internal/platform/reconciliation"
-	"backend-go/internal/platform/resilience"
+	"backend-go/internal/pkg/messaging"
+	"backend-go/internal/pkg/messaging/inbox"
+	"backend-go/internal/pkg/messaging/redisstream"
+	"backend-go/internal/pkg/outbox"
+	"backend-go/internal/pkg/reconciliation"
+	"backend-go/internal/pkg/resilience"
 
 	"github.com/sony/gobreaker/v2"
 )

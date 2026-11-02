@@ -1,5 +1,5 @@
 // Package app is the composition root ("Main component"): the one place where
-// configuration, infrastructure, platform and modules meet. Everything below
+// configuration, infrastructure, pkg and modules meet. Everything below
 // receives its dependencies through constructors; nothing reaches for globals.
 package app
 
@@ -11,9 +11,9 @@ import (
 	"sync"
 
 	"backend-go/internal/config"
-	"backend-go/internal/platform/grpcserver"
-	"backend-go/internal/platform/httpserver"
-	"backend-go/internal/platform/shutdown"
+	"backend-go/internal/pkg/grpcserver"
+	"backend-go/internal/pkg/httpserver"
+	"backend-go/internal/pkg/shutdown"
 )
 
 // Role selects which parts of the service a process runs.
@@ -119,7 +119,7 @@ func (a *App) setErr(err error) {
 
 // Run starts every component and blocks until SIGINT/SIGTERM or a component fails.
 //
-// Shutdown order (see platform/shutdown): flip readiness -> drain delay -> stop
+// Shutdown order (see pkg/shutdown): flip readiness -> drain delay -> stop
 // servers -> stop workers -> close pools. Workers outlive servers so in-flight
 // requests can still enqueue outbox events, and pools outlive both.
 func (a *App) Run(ctx context.Context) error {

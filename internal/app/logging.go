@@ -5,7 +5,7 @@ import (
 	"os"
 
 	"backend-go/internal/config"
-	"backend-go/internal/platform/observability/telemetry"
+	"backend-go/internal/pkg/observability/telemetry"
 )
 
 // SetupLogger installs the process-wide JSON logger with trace/request IDs and
