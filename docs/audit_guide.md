@@ -1,6 +1,6 @@
 # Panduan Paket Audit
 
-Package `internal/pkg/audit` mencatat aksi penting oleh pengguna atau sistem.
+Package `internal/platform/audit` mencatat aksi penting oleh pengguna atau sistem.
 Pilih salah satu implementasi `audit.Auditor` sesuai kebutuhan:
 
 - `audit.NewStructuredAuditor(logger)` menulis event sebagai structured log

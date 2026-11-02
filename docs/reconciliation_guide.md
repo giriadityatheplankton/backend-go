@@ -1,6 +1,6 @@
 # Panduan Reconciliation Engine
 
-Package `internal/pkg/reconciliation` menyediakan scheduler untuk menjalankan
+Package `internal/platform/reconciliation` menyediakan scheduler untuk menjalankan
 pekerjaan rekonsiliasi berkala. Engine tidak mengetahui skema database atau
 cara berkomunikasi dengan provider eksternal; aplikasi mengimplementasikan
 `reconciliation.Job` untuk mengambil data yang tertunda dan menyelesaikan
@@ -94,7 +94,7 @@ cfg.Threshold = 15 * time.Minute
 cfg.BatchSize = 100
 cfg.LockTTL = 2 * time.Minute
 
-lock := outbox.NewRedisDistributedLock(redisClient)
+lock := outbox.NewRedisDistributedLock(redisClient, "myservice:lock:")
 engine := reconciliation.NewEngine(cfg, lock)
 engine.RegisterJob(&PaymentReconciliationJob{
     payments: paymentRepo,

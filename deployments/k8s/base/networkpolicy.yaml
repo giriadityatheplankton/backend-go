@@ -1,0 +1,36 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-go-netpol
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: backend-go
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:   # public HTTP via the ingress controller and sibling services
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+        - podSelector:
+            matchLabels: { app.kubernetes.io/part-of: backend-services }
+      ports: [{ protocol: TCP, port: 8080 }]
+    - from:   # service-to-service gRPC
+        - podSelector:
+            matchLabels: { app.kubernetes.io/part-of: backend-services }
+      ports: [{ protocol: TCP, port: 50051 }]
+    - from:   # Prometheus scrapes the admin port; kubelet probes come from the node
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: monitoring }
+      ports: [{ protocol: TCP, port: 9090 }]
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels: { k8s-app: kube-dns }
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    - ports: [{ protocol: TCP, port: 5432 }]            # PostgreSQL (tighten with ipBlock/podSelector per environment)
+    - ports: [{ protocol: TCP, port: 6379 }, { protocol: TCP, port: 26379 }]   # Redis (+ Sentinel)
+    - to:                                              # downstream gRPC services
+        - podSelector:
+            matchLabels: { app.kubernetes.io/part-of: backend-services }
+      ports: [{ protocol: TCP, port: 50051 }]

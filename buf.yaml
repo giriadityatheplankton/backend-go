@@ -1,0 +1,12 @@
+version: v2
+modules:
+  - path: api/proto
+lint:
+  use:
+    - STANDARD
+  except:
+    - RPC_REQUEST_RESPONSE_UNIQUE   # CreateOrder/GetOrder intentionally return the shared Order message
+    - RPC_RESPONSE_STANDARD_NAME
+breaking:
+  use:
+    - FILE

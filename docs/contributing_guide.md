@@ -1,176 +1,55 @@
-# Panduan Kontribusi Developer
+# Panduan kontribusi
 
-Panduan ini menjelaskan cara mengembangkan template backend ini agar perubahan
-tetap reusable, teruji, dan tidak menambahkan asumsi domain bisnis tertentu.
+Skeleton ini adalah template: hanya sertakan kemampuan yang berguna bagi hampir semua service. Kode yang spesifik domain hidup di `internal/modules/<nama>`.
 
-## Prinsip pengembangan
+## Aturan emas
 
-- Perlakukan repository ini sebagai fondasi untuk service perusahaan
-- Package di `internal/pkg/` adalah tempat kemampuan infrastruktur reusable
-  seperti database, cache, outbox, idempotency, reconciliation, resilience,
-  telemetry, dan shutdown.
-- Implementasi `user` dan `order` yang ada adalah **contoh opsional**. File
-  contohnya memakai awalan `example_` dan build tag Go `examples`, sehingga
-  tidak dimasukkan ke build default.
-- Jangan menambahkan aturan domain, skema bisnis, route, dependency, atau
-  environment variable contoh ke aplikasi default kecuali perubahan tersebut
-  memang merupakan kemampuan generik yang dibutuhkan fondasi.
-- Pertahankan kompatibilitas API package dan konfigurasi yang sudah ada. Jika
-  ada perubahan breaking, jelaskan dampaknya dan sediakan panduan migrasi.
-- Tangani error secara eksplisit. Jangan membuang error, menyamarkan kegagalan
-  menjadi hasil sukses, atau menambahkan fallback diam-diam.
+1. **Dependency Rule** — dependensi mengarah ke dalam; ditegakkan oleh `tests/arch` dan `depguard`. Lihat [architecture.md](architecture.md).
+2. **Use case tidak tahu infrastruktur** — tidak ada `gin`, `database/sql`, `redis`, `proto`, `time.Now()`, `rand`. Pakai port, `clock.Clock`, `port.IDGenerator`.
+3. **Semua penulisan state idempotent di DB** (lapisan 2), semua consumer lewat inbox (lapisan 3). Lihat [idempotency_guide.md](idempotency_guide.md).
+4. **Konfigurasi masuk lewat `internal/config` dan hanya dibaca `app/`/`cmd/`**; paket lain menerima nilai lewat parameter.
+5. **Jangan telan error** dan jangan bocorkan detail internal ke klien: gunakan `apperr` + `respond.Fail` / `grpcserver.Error`.
+6. **Interface didefinisikan di sisi pemakai** dan sekecil mungkin (outbox: `Writer`, `Claimer`, `Purger`, `StatsReader`).
+7. **Implementasi dari satu port harus lulus kontrak yang sama** (lihat `idempotency/storetest`).
 
-## Menyiapkan lingkungan
+## Tata letak
 
-Persyaratan utama:
-
-- Versi Go sesuai direktif `go` di [go.mod](../go.mod).
-- `make` dan `golangci-lint` untuk menjalankan shortcut validasi.
-- Docker hanya diperlukan untuk tes integrasi berbasis Testcontainers.
-
-Clone repository, buat branch kerja, lalu pastikan baseline bersih:
-
-```sh
-git status --short
-go test ./...
-```
-
-Jangan menyalin credential ke repository. Gunakan environment lokal atau secret
-manager untuk konfigurasi sensitif. `.env.example` hanya untuk nama variabel
-dan nilai contoh non-rahasia.
-
-## Memahami struktur kode
-
-| Lokasi | Tanggung jawab |
+| Path | Isi |
 | --- | --- |
-| `cmd/api/` | Bootstrap aplikasi, dependency injection, server dan graceful shutdown |
-| `cmd/migrate/` | Menjalankan migrasi skema terhadap PostgreSQL primary |
-| `internal/config/` | Membaca dan memvalidasi konfigurasi environment |
-| `internal/pkg/` | Komponen infrastruktur dan helper generik |
-| `internal/domain/` | Kontrak dan error domain yang memang dimiliki fondasi; domain contoh dipisahkan |
-| `internal/handler/` | Adapter transport HTTP atau gRPC; handler contoh memakai build tag `examples` |
-| `internal/repository/` | Adapter persistence/cache untuk domain; implementasi contoh diberi awalan `example_` |
-| `internal/usecase/` | Alur aplikasi; use case contoh diberi awalan `example_` |
-| `internal/pkg/database/migration/sql/` | Migrasi SQL embedded |
-| `tests/integration/` | Tes yang membutuhkan dependency nyata melalui Testcontainers |
-| `docs/` | Panduan penggunaan, kontribusi, deployment, dan operasi |
+| `cmd/{api,worker,migrate}` | Entrypoint tipis; semua perakitan di `internal/app` |
+| `internal/app` | Composition root: infra, HTTP, gRPC, worker, shutdown |
+| `internal/kernel` | `apperr`, `clock`, `ids` (hanya stdlib) |
+| `internal/modules/<m>` | `domain`, `usecase/{port}`, `adapter/{inbound,outbound}`, `module.go` |
+| `internal/platform` | Infrastruktur reusable (tidak boleh meng-import `modules`/`app`/`config`) |
+| `api/proto`, `gen/proto` | Kontrak gRPC dan kode generate |
+| `migrations/{platform,<m>}` | SQL embedded per pemilik |
+| `tests/arch`, `tests/integration` | Aturan arsitektur; Postgres+Redis sungguhan |
 
-Saat menambahkan kemampuan reusable, utamakan interface kecil pada batas
-package dan implementasi adapter terpisah. Hindari menghubungkan package
-infrastruktur ke entity bisnis contoh.
+## Modul contoh
 
-## Mengembangkan contoh domain
+`order` dan `user` memakai build tag `examples` agar skeleton default kosong. `make remove-examples` menghapusnya (diverifikasi: skeleton tetap build dan lulus tes tanpa mereka). Saat menambah contoh baru, taruh di dalam modul contoh, bukan di `platform`.
 
-Gunakan contoh bila ingin menunjukkan cara memakai beberapa package bersama,
-tanpa menjadikan alur itu bagian dari service dasar:
+## Alur kerja
 
-1. Beri nama file dengan awalan `example_`.
-2. Tambahkan `//go:build examples` sebelum deklarasi package pada file Go.
-3. Beri prefix `Example` pada tipe, interface, handler, constructor, dan
-   fungsi registrasi yang menjadi bagian API contoh.
-4. Letakkan dependency injection contoh di `cmd/api/example_wiring.go`.
-   Bootstrap default harus tetap dapat dibangun tanpa package domain contoh.
-5. Tandai tes contoh dengan build tag yang sama. Untuk tes integrasi contoh,
-   gunakan `//go:build integration && examples`.
-6. Awali migrasi skema contoh dengan nama migrasi `example_`. Migration engine
-   mengabaikan migrasi tersebut pada build default.
-7. Simpan dokumentasi yang hanya menerangkan contoh dengan nama
-   `example_*.md`.
-8. Perbarui panduan contoh dan README bila alur menjalankannya berubah.
-
-Shortcut untuk menjalankan dan menguji contoh:
-
-```sh
-make run-examples
-make test-examples
-make test-example-integration
+```bash
+make test            # cepat, tanpa Docker
+make test-examples   # termasuk modul contoh
+make lint            # golangci-lint + depguard
+make test-integration  # Postgres + Redis (env TEST_* atau container)
 ```
 
-Tes integrasi contoh membutuhkan Docker. `make remove-examples` menghapus file
-yang dinamai sebagai contoh secara permanen dari working tree. Gunakan hanya
-ketika memang ingin membuat fork tanpa contoh, dan tinjau daftar file yang akan
-dihapus sebelum menjalankannya. Build tag tidak menggantikan penamaan file:
-keduanya diperlukan agar scope contoh jelas dan cleanup terarah.
+- Tes use case memakai **fake in-memory** (tanpa Docker). Jika sebuah use case butuh Docker untuk dites, ada detail infrastruktur yang bocor.
+- Tes repository/consumer/migrasi → integration test dengan build tag `integration`.
+- Selalu jalankan `go test -race`.
+- Migrasi: file baru `NNNNNN_nama.up.sql` (+ `.down.sql`), jangan ubah file yang sudah diterapkan (checksum akan menolak).
+- Perubahan `.proto` → `make proto` dan commit hasil `gen/`.
+- Tambahkan metrik untuk perilaku baru yang bisa gagal diam-diam, dan dokumentasikan variabel env baru di `.env.example` + `Validate()` bila ada hubungan antar nilai.
 
-## Menambahkan atau mengubah migrasi
+## Checklist PR
 
-- Beri setiap migrasi nomor urut unik dan deskripsi yang jelas, misalnya
-  `000006_add_feature_table.up.sql`.
-- Migrasi bisnis khusus contoh harus memakai segmen `example_`, misalnya
-  `000007_example_create_sample_table.up.sql`.
-- Hindari mengubah migrasi yang sudah pernah diterapkan di lingkungan bersama.
-  Tambahkan migrasi baru untuk perubahan lanjutan.
-- Rancang perubahan produksi dengan pola expand/contract bila beberapa versi
-  aplikasi dapat berjalan bersamaan saat rollout.
-- Pertimbangkan lock, index, durasi DDL, ukuran tabel, kompatibilitas rollback,
-  dan backup sebelum meminta migrasi diterapkan.
-- Tes migrasi pada PostgreSQL melalui integration test. Build migrator tidak
-  membuktikan bahwa SQL berhasil dieksekusi.
-
-Jalankan migrator hanya terhadap database development yang telah dikonfirmasi:
-
-```sh
-DB_PRIMARY_DSN='postgres://...' go run ./cmd/migrate
-```
-
-Jangan menaruh DSN nyata ke terminal yang terekam, issue, log, atau dokumentasi.
-
-## Pengujian dan pemeriksaan
-
-Mulai dengan tes package terkait, lalu jalankan pemeriksaan yang sesuai dengan
-perubahan:
-
-```sh
-go test ./internal/pkg/<package>
-go test ./...
-make test-integration
-make test-example-integration
-make lint
-make build
-git diff --check
-```
-
-Gunakan tes paling sempit selama iterasi, tetapi jalankan `go test ./...`,
-`make lint`, dan build sebelum mengajukan pull request bila perubahan
-memengaruhi kode. Untuk perubahan migrasi, repository, konektivitas, atau
-transaksi, jalankan integration test yang relevan juga.
-
-Jika mengubah aturan konfigurasi, uji nilai default, nilai valid, serta input
-tidak valid. Jika mengubah middleware atau package generik, pertahankan tes
-regresi untuk perilaku lama dan tambahkan kasus untuk perilaku baru.
-
-## Kualitas implementasi
-
-- Ikuti format Go (`gofmt`) dan pola package yang sudah ada.
-- Gunakan `context.Context` untuk operasi I/O dan hormati pembatalan/deadline.
-- Bungkus error dengan konteks menggunakan `%w` agar pemanggil tetap dapat
-  memeriksanya lewat `errors.Is` atau `errors.As`.
-- Tutup resource dan tangani error penutupan jika dapat memengaruhi hasil
-  operasi.
-- Jangan mencatat credential, token, payload sensitif, atau data pribadi.
-- Hindari label metric dengan cardinality tinggi seperti ID resource atau path
-  mentah yang berisi identifier.
-- Jangan menjadikan cache atau read replica sebagai sumber authoritative untuk
-  keputusan kritis.
-- Dokumentasikan perubahan konfigurasi, kontrak, perilaku fail-open/fail-closed,
-  dan kebutuhan operasi.
-
-## Checklist pull request
-
-Sebelum meminta review, pastikan:
-
-- [ ] Perubahan menyelesaikan satu tujuan yang jelas dan tidak mencampur
-      refactor yang tidak terkait.
-- [ ] Infrastruktur reusable tidak bergantung pada domain contoh.
-- [ ] Kode contoh diberi nama dan build tag yang sesuai serta tidak masuk build
-      default.
-- [ ] Error, timeout, shutdown, concurrency, dan perilaku saat dependency gagal
-      telah dipertimbangkan.
-- [ ] Tes unit, tes integrasi yang relevan, lint, dan build berhasil.
-- [ ] Dokumentasi, README, `.env.example`, serta manifest diperbarui jika
-      kontrak atau konfigurasi berubah.
-- [ ] Tidak ada credential, file hasil build, perubahan generated yang tidak
-      diperlukan, atau perubahan worktree lain yang ikut masuk.
-- [ ] Deskripsi PR menjelaskan konteks, pendekatan, validasi, dampak operasional,
-      serta langkah migrasi jika diperlukan.
-
+- [ ] `make test test-examples lint` hijau
+- [ ] Tidak ada import yang melanggar lapisan
+- [ ] Error baru memakai `apperr` dengan `Kind` yang tepat
+- [ ] Penulisan state: ada `UNIQUE`/fingerprint atau alasan tertulis mengapa tidak perlu
+- [ ] Handler consumer membedakan error sementara vs `messaging.Permanent`
+- [ ] Env baru: `.env.example`, ConfigMap, dan `Validate()`

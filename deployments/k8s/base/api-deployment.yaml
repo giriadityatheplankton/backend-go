@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-go
+  labels:
+    app.kubernetes.io/name: backend-go
+    app.kubernetes.io/component: api
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 25%, maxUnavailable: 0 }
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend-go
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: backend-go
+        app.kubernetes.io/component: api
+        app.kubernetes.io/part-of: backend-services
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      # Must be >= DRAIN_DELAY + SHUTDOWN_TIMEOUT + preStop (2s + 15s + 3s = 20s).
+      terminationGracePeriodSeconds: 30
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app.kubernetes.io/name: backend-go, app.kubernetes.io/component: api }
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app.kubernetes.io/name: backend-go, app.kubernetes.io/component: api }
+      containers:
+        - name: api
+          image: backend-go
+          imagePullPolicy: IfNotPresent
+          command: ["/app/api"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          ports:
+            - { name: http, containerPort: 8080 }
+            - { name: grpc, containerPort: 50051 }
+            - { name: admin, containerPort: 9090 }
+          envFrom:
+            - configMapRef: { name: backend-go-config }
+            - secretRef: { name: backend-go-secrets }
+          env:
+            - name: EMBED_WORKER
+              value: "false"          # the worker runs as its own Deployment
+          resources:
+            requests: { cpu: 250m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+          lifecycle:
+            preStop:
+              sleep: { seconds: 3 }   # native sleep action: the distroless image has no shell
+          # Ready only once PostgreSQL and Redis answer; liveness stays dependency-free.
+          startupProbe:
+            httpGet: { path: /healthz/ready, port: admin }
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /healthz/ready, port: admin }
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /healthz/live, port: admin }
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }

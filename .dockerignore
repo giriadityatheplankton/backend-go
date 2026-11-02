@@ -2,9 +2,12 @@
 .github
 bin
 tmp
+coverage.*
 .env
-.env.example
+.env.*
+!.env.example
 *.md
-Makefile
-Dockerfile
+!README.md
+docs
+deployments/k8s
 docker-compose.yml

@@ -242,7 +242,6 @@ Simpan konfigurasi pada key path: `config/backend-go/production`
   "redis_address": "redis-cluster:6379",
   "redis_db": 0,
   "cache_ttl": "5m",
-  "nats_address": "nats://nats-cluster:4222",
   "outbox_partitions": 16,
   "outbox_batch_size": 200,
   "outbox_poll_interval": "100ms",
