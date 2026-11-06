@@ -1,12 +1,79 @@
-version: '3.8'
-
+# Local development stack: PostgreSQL, Redis (AOF, noeviction) and the service.
+#   docker compose up --build                 # API + embedded worker
+#   docker compose --profile split up --build # API and worker as separate containers
+#   GO_TAGS=examples docker compose up --build
 services:
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "8080:8080"
+  postgres:
+    image: postgres:16-alpine
     environment:
-      - SERVER_ADDRESS=0.0.0.0:8080
-      - APP_ENV=development
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: appdb
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d appdb"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    # State Redis: idempotency keys, locks and streams must never be evicted, and
+    # must survive a restart (AOF). Run a separate Redis (allkeys-lru) for cache in production.
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory-policy", "noeviction"]
+    ports: ["6379:6379"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build: &build
+      context: .
+      dockerfile: deployments/docker/Dockerfile
+      args:
+        GO_TAGS: ${GO_TAGS:-}
+    entrypoint: ["/app/migrate"]
+    environment: &env
+      APP_ENV: development
+      DB_PRIMARY_DSN: postgres://postgres:postgres@postgres:5432/appdb?sslmode=disable
+      REDIS_ADDRESSES: redis:6379
+      SERVER_ADDRESS: 0.0.0.0:8080
+      GRPC_ADDRESS: 0.0.0.0:50051
+      ADMIN_ADDRESS: 0.0.0.0:9090
+      AUTH_MODE: static
+      AUTH_STATIC_TOKENS: dev-token-0123456789abcdefghij;dev;tenant-dev;orders:read,orders:write,users:read
+      EMBED_WORKER: "true"
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    build: *build
+    environment: *env
+    ports: ["8080:8080", "50051:50051", "9090:9090"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
+  worker:
+    profiles: [split]
+    build: *build
+    entrypoint: ["/app/worker"]
+    environment:
+      <<: *env
+      EMBED_WORKER: "false"
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
+  # Optional: traces. Uncomment and set OTLP exporter once OpenTelemetry is adopted.
+  # jaeger:
+  #   image: jaegertracing/all-in-one:1.62
+  #   ports: ["16686:16686", "4317:4317"]
+
+volumes:
+  pgdata:
+  redisdata:

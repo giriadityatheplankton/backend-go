@@ -28,14 +28,14 @@ func DefaultCleanerConfig() CleanerConfig {
 // Cleaner periodically purges published events older than retention period to prevent table bloat.
 type Cleaner struct {
 	cfg    CleanerConfig
-	repo   Repository
+	repo   Purger
 	lock   DistributedLock
 	stopCh chan struct{}
 	wg     sync.WaitGroup
 }
 
 // NewCleaner initializes outbox retention cleaner.
-func NewCleaner(cfg CleanerConfig, repo Repository, lock DistributedLock) *Cleaner {
+func NewCleaner(cfg CleanerConfig, repo Purger, lock DistributedLock) *Cleaner {
 	if cfg.Interval <= 0 {
 		cfg.Interval = 10 * time.Minute
 	}
@@ -121,4 +121,12 @@ func (c *Cleaner) purgeBatch(ctx context.Context) {
 	if deleted > 0 {
 		slog.InfoContext(ctx, "Purged expired outbox records", "deleted_count", deleted, "cutoff", cutoff)
 	}
+}
+
+// Run starts the cleaner and blocks until ctx is cancelled, then stops it.
+func (c *Cleaner) Run(ctx context.Context) error {
+	c.Start(ctx)
+	<-ctx.Done()
+	c.Stop()
+	return nil
 }

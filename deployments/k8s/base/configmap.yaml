@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-go-config
+data:
+  APP_ENV: "production"
+  SERVICE_NAME: "backend-go"
+  SERVER_ADDRESS: ":8080"
+  GRPC_ADDRESS: ":50051"
+  ADMIN_ADDRESS: ":9090"      # probes + metrics; never expose this port through the Ingress
+  PPROF_ENABLED: "false"
+  GRPC_REFLECTION: "false"
+
+  # Request / shutdown budget. TERMINATION_GRACE must equal terminationGracePeriodSeconds
+  # in the Deployments; config validation checks DRAIN_DELAY + SHUTDOWN_TIMEOUT + PRESTOP_DELAY fits.
+  HTTP_REQUEST_TIMEOUT: "10s"
+  GRPC_REQUEST_TIMEOUT: "10s"
+  DRAIN_DELAY: "2s"
+  SHUTDOWN_TIMEOUT: "15s"
+  PRESTOP_DELAY: "3s"
+  TERMINATION_GRACE: "30s"
+
+  # PostgreSQL pool: total connections = replicas x DB_MAX_OPEN_CONNS (+ worker). Keep it
+  # below max_connections, or put PgBouncer in front.
+  DB_MAX_OPEN_CONNS: "20"
+  DB_MAX_IDLE_CONNS: "10"
+  DB_CONN_MAX_LIFETIME: "30m"
+  DB_CONN_MAX_IDLE_TIME: "5m"
+  DB_STATEMENT_TIMEOUT: "5s"
+  DB_IDLE_IN_TX_TIMEOUT: "15s"
+
+  # State Redis (idempotency, locks, streams): noeviction + AOF.
+  REDIS_MODE: "single"
+  REDIS_ADDRESSES: "redis-state.default.svc.cluster.local:6379"
+  REDIS_REQUIRED: "true"
+  # Cache Redis (may evict). Remove these two lines to reuse the state Redis (not recommended).
+  REDIS_CACHE_MODE: "single"
+  REDIS_CACHE_ADDRESSES: "redis-cache.default.svc.cluster.local:6379"
+  CACHE_TTL: "5m"
+
+  IDEMPOTENCY_TTL: "24h"
+  IDEMPOTENCY_INFLIGHT_TTL: "30s"
+  IDEMPOTENCY_FAILURE_MODE: "closed"   # money/stock endpoints must fail closed
+
+  AUTH_MODE: "jwt"
+  JWT_ISSUER: "https://auth.example.com"
+  JWT_AUDIENCE: "backend-go"
+
+  OUTBOX_PARTITIONS: "8"
+  OUTBOX_BATCH_SIZE: "100"
+  OUTBOX_PRESERVE_ORDER: "true"
+  STREAM_MAXLEN: "100000"
+
+  GOMEMLIMIT: "900MiB"            # ~90% of the 1Gi limit

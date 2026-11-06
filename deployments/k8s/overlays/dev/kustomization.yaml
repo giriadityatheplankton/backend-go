@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: backend-dev
+resources:
+  - ../../base
+images:
+  - name: backend-go
+    newName: ghcr.io/giriaditya/backend-go
+    newTag: "dev"          # prod: replace with @sha256 digest in the release pipeline
+patches:
+  - target: { kind: Deployment, name: backend-go }
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target: { kind: ConfigMap, name: backend-go-config }
+    patch: |-
+      - op: replace
+        path: /data/APP_ENV
+        value: "dev"
+  - target: { kind: HorizontalPodAutoscaler }
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 1
+      - op: replace
+        path: /spec/maxReplicas
+        value: 2
+  - target: { kind: PodDisruptionBudget }
+    patch: |-
+      - op: replace
+        path: /spec/minAvailable
+        value: 0

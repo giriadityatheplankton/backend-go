@@ -1,185 +1,216 @@
+// Package idempotency implements layer 1 (edge) of the three-layer idempotency
+// design: it de-duplicates client retries and concurrent duplicates for HTTP and
+// gRPC using a fenced lease stored in Redis.
+//
+// It is an optimisation and a fast path, NOT the source of truth. Redis can lose
+// keys (eviction, async-replication failover, FLUSHALL), so every state-writing
+// use case must also enforce idempotency in the database (UNIQUE key +
+// fingerprint, layer 2) and every consumer must de-duplicate with the inbox
+// (layer 3).
 package idempotency
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"sync"
+	"regexp"
 	"time"
-
-	"github.com/redis/go-redis/v9"
 )
 
 var (
-	ErrRequestInProgress = errors.New("concurrent request with same idempotency key is already in progress")
-	ErrInvalidKey        = errors.New("idempotency key cannot be empty")
+	// ErrLeaseLost means the lease expired or was taken over; the caller no longer owns the key.
+	ErrLeaseLost = errors.New("idempotency lease lost")
+	// ErrInvalidKey means the client supplied a malformed idempotency key.
+	ErrInvalidKey = errors.New("invalid idempotency key")
 )
-
-type Status string
 
 const (
-	StatusStarted   Status = "STARTED"
-	StatusCompleted Status = "COMPLETED"
-	StatusFailed    Status = "FAILED"
+	// HeaderIdempotencyKey is the standard header (draft-ietf-httpapi-idempotency-key-header).
+	HeaderIdempotencyKey = "Idempotency-Key"
+	// HeaderLegacyIdempotencyKey is still accepted for backward compatibility.
+	HeaderLegacyIdempotencyKey = "X-Idempotency-Key"
+	// HeaderReplayed is set to "true" on responses served from the idempotency cache.
+	HeaderReplayed = "Idempotent-Replayed"
+
+	// MetadataIdempotencyKey is the gRPC metadata key.
+	MetadataIdempotencyKey = "idempotency-key"
+	// MetadataLegacyIdempotencyKey is the legacy gRPC metadata key.
+	MetadataLegacyIdempotencyKey = "x-idempotency-key"
+
+	DefaultInFlightTTL  = 30 * time.Second
+	DefaultCompletedTTL = 24 * time.Hour
+	DefaultMaxBodyBytes = 1 << 20
+	// persistTimeout bounds Complete/Release, which run on a context detached from the request.
+	persistTimeout = 2 * time.Second
 )
 
-// Record represents cached idempotency execution state.
+var keyPattern = regexp.MustCompile(`^[\x21-\x7E]{1,128}$`)
+
+// ValidKey reports whether key is 1-128 printable, non-space ASCII characters.
+func ValidKey(key string) bool { return keyPattern.MatchString(key) }
+
+// State is the lifecycle of an idempotency record.
+type State string
+
+const (
+	StateStarted   State = "STARTED"
+	StateCompleted State = "COMPLETED"
+)
+
+// Record is the stored idempotency state for one key.
 type Record struct {
-	Key          string            `json:"key"`
-	Fingerprint  string            `json:"fingerprint,omitempty"`
-	Status       Status            `json:"status"`
-	StatusCode   int               `json:"status_code"`
-	Headers      map[string]string `json:"headers"`
-	ResponseBody []byte            `json:"response_body"`
-	CreatedAt    time.Time         `json:"created_at"`
+	State       State
+	Fingerprint string
+
+	// HTTP replay data.
+	StatusCode  int
+	ContentType string
+	Headers     map[string]string
+	Body        []byte // HTTP body, or a marshalled anypb.Any for gRPC success
+
+	// gRPC deterministic-error replay data (GRPCCode != 0 means "replay this error").
+	GRPCCode    uint32
+	GRPCMessage string
 }
 
-// Storage defines interface for persisting idempotency state.
-type Storage interface {
-	// TryLock returns (acquired=true, nil, nil) if lock obtained.
-	// Returns (acquired=false, existingRecord, nil) if key already exists.
-	TryLock(ctx context.Context, key string, inFlightTTL time.Duration) (bool, *Record, error)
-	SaveResponse(ctx context.Context, key string, record *Record, completedTTL time.Duration) error
-	ReleaseLock(ctx context.Context, key string) error
-}
-
-type FingerprintStorage interface {
-	TryLockWithFingerprint(ctx context.Context, key, fingerprint string, inFlightTTL time.Duration) (bool, *Record, error)
-}
-
-// RedisStorage implements Storage backed by Redis.
-type RedisStorage struct {
-	client redis.UniversalClient
-}
-
-// NewRedisStorage initializes RedisStorage.
-func NewRedisStorage(client redis.UniversalClient) *RedisStorage {
-	return &RedisStorage{client: client}
-}
-
-func (s *RedisStorage) formatKey(key string) string {
-	return fmt.Sprintf("idempotency:%s", key)
-}
-
-func (s *RedisStorage) TryLock(ctx context.Context, key string, inFlightTTL time.Duration) (bool, *Record, error) {
-	return s.TryLockWithFingerprint(ctx, key, "", inFlightTTL)
-}
-
-func (s *RedisStorage) TryLockWithFingerprint(ctx context.Context, key, fingerprint string, inFlightTTL time.Duration) (bool, *Record, error) {
-	if s.client == nil {
-		return true, nil, nil
-	}
-	rKey := s.formatKey(key)
-
-	initialRecord := Record{
-		Key:         key,
-		Fingerprint: fingerprint,
-		Status:      StatusStarted,
-		CreatedAt:   time.Now(),
-	}
-	data, _ := json.Marshal(initialRecord)
-
-	ok, err := s.client.SetNX(ctx, rKey, data, inFlightTTL).Result()
-	if err != nil {
-		return false, nil, err
-	}
-	if ok {
-		return true, nil, nil
-	}
-
-	// Key already exists, fetch existing record
-	val, err := s.client.Get(ctx, rKey).Result()
-	if err != nil {
-		return false, nil, err
-	}
-
-	var existing Record
-	if err := json.Unmarshal([]byte(val), &existing); err != nil {
-		return false, nil, err
-	}
-
-	return false, &existing, nil
-}
-
-func (s *RedisStorage) SaveResponse(ctx context.Context, key string, record *Record, completedTTL time.Duration) error {
-	if s.client == nil {
+// Clone returns a deep copy so stores never alias caller memory.
+func (r *Record) Clone() *Record {
+	if r == nil {
 		return nil
 	}
-	rKey := s.formatKey(key)
-	record.Status = StatusCompleted
-
-	data, err := json.Marshal(record)
-	if err != nil {
-		return err
-	}
-
-	return s.client.Set(ctx, rKey, data, completedTTL).Err()
-}
-
-func (s *RedisStorage) ReleaseLock(ctx context.Context, key string) error {
-	if s.client == nil {
-		return nil
-	}
-	rKey := s.formatKey(key)
-	return s.client.Del(ctx, rKey).Err()
-}
-
-// MemoryStorage provides in-memory implementation for testing/single-instance.
-type MemoryStorage struct {
-	mu        sync.Mutex
-	records   map[string]*Record
-	expiresAt map[string]time.Time
-}
-
-// NewMemoryStorage initializes MemoryStorage.
-func NewMemoryStorage() *MemoryStorage {
-	return &MemoryStorage{
-		records:   make(map[string]*Record),
-		expiresAt: make(map[string]time.Time),
-	}
-}
-
-func (m *MemoryStorage) TryLock(ctx context.Context, key string, inFlightTTL time.Duration) (bool, *Record, error) {
-	return m.TryLockWithFingerprint(ctx, key, "", inFlightTTL)
-}
-
-func (m *MemoryStorage) TryLockWithFingerprint(ctx context.Context, key, fingerprint string, inFlightTTL time.Duration) (bool, *Record, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if rec, exists := m.records[key]; exists {
-		if expiry := m.expiresAt[key]; expiry.IsZero() || time.Now().Before(expiry) {
-			return false, rec, nil
+	cp := *r
+	if r.Headers != nil {
+		cp.Headers = make(map[string]string, len(r.Headers))
+		for k, v := range r.Headers {
+			cp.Headers[k] = v
 		}
-		delete(m.records, key)
-		delete(m.expiresAt, key)
 	}
-
-	rec := &Record{
-		Key:         key,
-		Fingerprint: fingerprint,
-		Status:      StatusStarted,
-		CreatedAt:   time.Now(),
-	}
-	m.records[key] = rec
-	m.expiresAt[key] = time.Now().Add(inFlightTTL)
-	return true, nil, nil
+	cp.Body = append([]byte(nil), r.Body...)
+	return &cp
 }
 
-func (m *MemoryStorage) SaveResponse(ctx context.Context, key string, record *Record, completedTTL time.Duration) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	record.Status = StatusCompleted
-	m.records[key] = record
-	m.expiresAt[key] = time.Now().Add(completedTTL)
-	return nil
+// Lease proves ownership of an in-flight key. Token is the fencing token.
+type Lease struct {
+	Key   string
+	Token string
 }
 
-func (m *MemoryStorage) ReleaseLock(ctx context.Context, key string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.records, key)
-	delete(m.expiresAt, key)
-	return nil
+// Store persists idempotency state. Contract (verified by storetest.RunContract):
+//
+//   - Acquire succeeds for exactly one concurrent caller per key. Losers get the
+//     existing Record (State STARTED or COMPLETED) and a zero Lease.
+//   - Complete, Release and Extend only take effect for the current lease owner;
+//     otherwise they return ErrLeaseLost and change nothing.
+//   - Records are copied; mutating a Record after Complete never changes stored data.
+//   - A store never "fails open" by itself: connectivity problems are returned as
+//     errors and the middleware applies the configured FailureMode.
+type Store interface {
+	Acquire(ctx context.Context, key, fingerprint string, inFlightTTL time.Duration) (Lease, *Record, error)
+	Complete(ctx context.Context, lease Lease, rec *Record, completedTTL time.Duration) error
+	Release(ctx context.Context, lease Lease) error
+	Extend(ctx context.Context, lease Lease, inFlightTTL time.Duration) error
+}
+
+// FailureMode decides what happens when the Store is unreachable.
+type FailureMode int
+
+const (
+	// FailClosed rejects the request (503 / UNAVAILABLE). Required for money and stock.
+	FailClosed FailureMode = iota
+	// FailOpen runs the handler without edge dedupe; layer 2 (DB) must protect the write.
+	FailOpen
+)
+
+// ParseFailureMode converts "closed"/"open" to a FailureMode.
+func ParseFailureMode(s string) (FailureMode, error) {
+	switch s {
+	case "", "closed":
+		return FailClosed, nil
+	case "open":
+		return FailOpen, nil
+	}
+	return FailClosed, errors.New(`failure mode must be "closed" or "open"`)
+}
+
+// Observer receives decisions for metrics. metrics.Metrics implements it; nil is allowed.
+type Observer interface {
+	IncIdempotency(result string)
+}
+
+// Result labels reported to Observer.
+const (
+	ResultAcquired   = "acquired"
+	ResultReplayed   = "replayed"
+	ResultInProgress = "in_progress"
+	ResultMismatch   = "mismatch"
+	ResultLeaseLost  = "lease_lost"
+	ResultStoreError = "store_error"
+	ResultBypassed   = "bypassed"
+	ResultReleased   = "released"
+)
+
+func observe(o Observer, result string) {
+	if o != nil {
+		o.IncIdempotency(result)
+	}
+}
+
+// persistContext detaches from request cancellation so a result is still saved
+// after the client disconnects or the request deadline passes.
+func persistContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), persistTimeout)
+}
+
+// heartbeat extends the lease every ttl/3 until the returned stop func is called,
+// so a slow handler does not lose its lease. A lost lease stops the heartbeat.
+func heartbeat(ctx context.Context, store Store, lease Lease, ttl time.Duration, obs Observer) (stop func()) {
+	if ttl < 3*time.Millisecond {
+		return func() {}
+	}
+	hbCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		t := time.NewTicker(ttl / 3)
+		defer t.Stop()
+		for {
+			select {
+			case <-hbCtx.Done():
+				return
+			case <-t.C:
+				callCtx, c := context.WithTimeout(hbCtx, persistTimeout)
+				err := store.Extend(callCtx, lease, ttl)
+				c()
+				if errors.Is(err, ErrLeaseLost) {
+					observe(obs, ResultLeaseLost)
+					return
+				}
+			}
+		}
+	}()
+	return func() { cancel(); <-done }
+}
+
+type keyCtx struct{}
+
+// WithKey stores the client's idempotency key in ctx so outbound calls can derive
+// their own keys from it (see DerivedKey).
+func WithKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, keyCtx{}, key)
+}
+
+// KeyFrom returns the client's idempotency key from ctx, or "".
+func KeyFrom(ctx context.Context) string {
+	k, _ := ctx.Value(keyCtx{}).(string)
+	return k
+}
+
+// DerivedKey returns "<clientKey>:<suffix>" for a downstream call, or "" if ctx has
+// no key. Calling the same dependency twice for the same client request then
+// carries the same key, so retries chain safely instead of double-charging.
+func DerivedKey(ctx context.Context, suffix string) string {
+	k := KeyFrom(ctx)
+	if k == "" {
+		return ""
+	}
+	return k + ":" + suffix
 }

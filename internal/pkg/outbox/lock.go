@@ -15,31 +15,43 @@ var (
 	ErrLockNotHeld = errors.New("lock not held or token mismatch")
 )
 
-// DistributedLock defines contract for multi-pod safe distributed locking.
+// DistributedLock is a best-effort mutual exclusion for singleton background jobs
+// (cleaner, reconciliation). It is NOT used for outbox exclusivity (Postgres
+// leases do that), and jobs protected by it must be idempotent anyway.
 type DistributedLock interface {
 	Acquire(ctx context.Context, key string, ttl time.Duration) (token string, err error)
 	Release(ctx context.Context, key string, token string) error
 	Extend(ctx context.Context, key string, token string, ttl time.Duration) error
 }
 
-// RedisDistributedLock implements Redlock/SETNX pattern on Redis.
+var (
+	releaseScript = redis.NewScript(`
+if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) end
+return 0`)
+	extendScript = redis.NewScript(`
+if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("pexpire", KEYS[1], ARGV[2]) end
+return 0`)
+)
+
+var errNoRedis = errors.New("redis client unavailable")
+
+// RedisDistributedLock implements the SET NX PX pattern with token-fenced release/extend.
 type RedisDistributedLock struct {
 	client redis.UniversalClient
+	prefix string
 }
 
-// NewRedisDistributedLock creates a new RedisDistributedLock instance.
-func NewRedisDistributedLock(client redis.UniversalClient) *RedisDistributedLock {
-	return &RedisDistributedLock{client: client}
+// NewRedisDistributedLock creates a lock; prefix namespaces keys per service.
+func NewRedisDistributedLock(client redis.UniversalClient, prefix string) *RedisDistributedLock {
+	return &RedisDistributedLock{client: client, prefix: prefix}
 }
 
-// Acquire tries to obtain lock using SET NX PX.
 func (l *RedisDistributedLock) Acquire(ctx context.Context, key string, ttl time.Duration) (string, error) {
 	if l.client == nil {
-		return "", errors.New("redis client unavailable")
+		return "", errNoRedis
 	}
-
 	token := generateToken()
-	ok, err := l.client.SetNX(ctx, key, token, ttl).Result()
+	ok, err := l.client.SetNX(ctx, l.prefix+key, token, ttl).Result()
 	if err != nil {
 		return "", err
 	}
@@ -49,47 +61,29 @@ func (l *RedisDistributedLock) Acquire(ctx context.Context, key string, ttl time
 	return token, nil
 }
 
-// Release safely releases lock via atomic Lua script.
-func (l *RedisDistributedLock) Release(ctx context.Context, key string, token string) error {
+func (l *RedisDistributedLock) Release(ctx context.Context, key, token string) error {
 	if l.client == nil {
-		return nil
+		return errNoRedis
 	}
-
-	luaScript := `
-		if redis.call("get", KEYS[1]) == ARGV[1] then
-			return redis.call("del", KEYS[1])
-		else
-			return 0
-		end
-	`
-	res, err := l.client.Eval(ctx, luaScript, []string{key}, token).Result()
+	n, err := releaseScript.Run(ctx, l.client, []string{l.prefix + key}, token).Int()
 	if err != nil {
 		return err
 	}
-	if res == int64(0) {
+	if n == 0 {
 		return ErrLockNotHeld
 	}
 	return nil
 }
 
-// Extend renews lock lease via atomic Lua script.
-func (l *RedisDistributedLock) Extend(ctx context.Context, key string, token string, ttl time.Duration) error {
+func (l *RedisDistributedLock) Extend(ctx context.Context, key, token string, ttl time.Duration) error {
 	if l.client == nil {
-		return nil
+		return errNoRedis
 	}
-
-	luaScript := `
-		if redis.call("get", KEYS[1]) == ARGV[1] then
-			return redis.call("pexpire", KEYS[1], ARGV[2])
-		else
-			return 0
-		end
-	`
-	res, err := l.client.Eval(ctx, luaScript, []string{key}, token, ttl.Milliseconds()).Result()
+	n, err := extendScript.Run(ctx, l.client, []string{l.prefix + key}, token, ttl.Milliseconds()).Int()
 	if err != nil {
 		return err
 	}
-	if res == int64(0) {
+	if n == 0 {
 		return ErrLockNotHeld
 	}
 	return nil

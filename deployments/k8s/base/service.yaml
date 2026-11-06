@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-go
+  labels:
+    app.kubernetes.io/name: backend-go
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: backend-go
+    app.kubernetes.io/component: api
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+    - { name: grpc, port: 50051, targetPort: grpc, appProtocol: grpc }
+# The admin port (probes/metrics) is intentionally not part of this Service.

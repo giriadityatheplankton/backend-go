@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"backend-go/internal/pkg/audit"
-	"backend-go/internal/pkg/telemetry"
+	"backend-go/internal/pkg/observability/telemetry"
 
 	"github.com/stretchr/testify/assert"
 )

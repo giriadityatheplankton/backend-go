@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: backend-prod
+resources:
+  - ../../base
+images:
+  - name: backend-go
+    newName: ghcr.io/giriaditya/backend-go
+    newTag: "1.0.0"          # prod: replace with @sha256 digest in the release pipeline
+patches:
+  - target: { kind: Deployment, name: backend-go }
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
+  - target: { kind: ConfigMap, name: backend-go-config }
+    patch: |-
+      - op: replace
+        path: /data/APP_ENV
+        value: "production"

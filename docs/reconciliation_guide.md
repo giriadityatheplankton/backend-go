@@ -94,7 +94,7 @@ cfg.Threshold = 15 * time.Minute
 cfg.BatchSize = 100
 cfg.LockTTL = 2 * time.Minute
 
-lock := outbox.NewRedisDistributedLock(redisClient)
+lock := outbox.NewRedisDistributedLock(redisClient, "myservice:lock:")
 engine := reconciliation.NewEngine(cfg, lock)
 engine.RegisterJob(&PaymentReconciliationJob{
     payments: paymentRepo,

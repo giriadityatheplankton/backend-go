@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"backend-go/internal/pkg/telemetry"
+	"backend-go/internal/pkg/observability/telemetry"
 
 	"github.com/google/uuid"
 )

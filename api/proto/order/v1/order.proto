@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package order.v1;
+
+option go_package = "backend-go/gen/proto/order/v1;orderv1";
+
+// OrderService creates and reads orders.
+//
+// CreateOrder is idempotent: send the key in gRPC metadata "idempotency-key".
+// Retrying with the same key and payload returns the original order; the same
+// key with a different payload fails with INVALID_ARGUMENT.
+service OrderService {
+  rpc CreateOrder(CreateOrderRequest) returns (Order);
+  rpc GetOrder(GetOrderRequest) returns (Order);
+  // GetOrderStrong always reads the primary database and bypasses the cache.
+  rpc GetOrderStrong(GetOrderRequest) returns (Order);
+}
+
+message CreateOrderRequest {
+  string customer_id = 1;
+  int64 amount_minor = 2;
+  string currency = 3; // ISO 4217, e.g. "IDR"
+}
+
+message GetOrderRequest {
+  string id = 1;
+}
+
+message Order {
+  string id = 1;
+  string customer_id = 2;
+  int64 amount_minor = 3;
+  string currency = 4;
+  string status = 5;
+  int64 created_at_unix = 6;
+  bool replayed = 7; // true when an idempotent retry returned an existing order
+}

@@ -11,6 +11,11 @@ type PoolConfig struct {
 	MaxIdleConns    int
 	ConnMaxLifetime time.Duration
 	ConnMaxIdleTime time.Duration
+
+	// StatementTimeout aborts any single statement server-side (0 = server default).
+	StatementTimeout time.Duration
+	// IdleInTxTimeout kills sessions that sit idle inside a transaction, which would otherwise hold locks.
+	IdleInTxTimeout time.Duration
 }
 
 // DefaultPoolConfig returns cloud-hardened connection pool settings.

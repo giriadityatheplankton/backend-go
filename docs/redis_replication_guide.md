@@ -7,7 +7,7 @@ yang digunakan oleh deployment.
 
 ## Mode client yang didukung
 
-Konfigurasi aplikasi mendukung `REDIS_MODE=single` dan `REDIS_MODE=cluster`.
+Konfigurasi aplikasi mendukung `REDIS_MODE=single`, `sentinel` (wajib `REDIS_MASTER_NAME`, alamat = daftar Sentinel) dan `cluster`. TLS, ACL (`REDIS_USERNAME`), timeout, dan pool tersedia; lihat `.env.example`. Pisahkan Redis `state` (idempotency, lock, stream: `noeviction` + AOF) dari Redis `cache` (`REDIS_CACHE_*`, boleh `allkeys-lru`).
 Alamat seed diatur melalui `REDIS_ADDRESSES`, dan password melalui
 `REDIS_PASSWORD`.
 

@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // OpenPostgresGroup opens and verifies a primary PostgreSQL connection and zero
@@ -21,10 +23,20 @@ func OpenPostgresGroup(ctx context.Context, primaryDSN string, replicaDSNs []str
 		if dsn == "" {
 			return nil, fmt.Errorf("PostgreSQL %s DSN is empty", role)
 		}
-		db, err := sql.Open("pgx", dsn)
+		pgCfg, err := pgx.ParseConfig(dsn)
 		if err != nil {
-			return nil, fmt.Errorf("open PostgreSQL %s: %w", role, err)
+			return nil, fmt.Errorf("parse PostgreSQL %s DSN: %w", role, err)
 		}
+		if pgCfg.RuntimeParams == nil {
+			pgCfg.RuntimeParams = map[string]string{}
+		}
+		if cfg.StatementTimeout > 0 {
+			pgCfg.RuntimeParams["statement_timeout"] = strconv.FormatInt(cfg.StatementTimeout.Milliseconds(), 10)
+		}
+		if cfg.IdleInTxTimeout > 0 {
+			pgCfg.RuntimeParams["idle_in_transaction_session_timeout"] = strconv.FormatInt(cfg.IdleInTxTimeout.Milliseconds(), 10)
+		}
+		db := stdlib.OpenDB(*pgCfg)
 		ConfigurePool(db, cfg)
 		if err := db.PingContext(ctx); err != nil {
 			_ = db.Close()

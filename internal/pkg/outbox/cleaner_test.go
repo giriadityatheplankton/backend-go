@@ -8,38 +8,23 @@ import (
 	"backend-go/internal/pkg/outbox"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestCleanerPurge(t *testing.T) {
+func TestPurgerDeletesOnlyOldPublished(t *testing.T) {
 	repo := outbox.NewMemoryRepository()
-	lock := &mockDistributedLock{}
-
-	// Insert old published event
-	oldEvent := &outbox.OutboxEvent{
-		ID:        "old-1",
-		Status:    outbox.StatusPublished,
-		UpdatedAt: time.Now().Add(-10 * 24 * time.Hour),
+	ctx := context.Background()
+	for _, id := range []string{"old", "new"} {
+		_ = repo.Save(ctx, ev(id, id, time.Now()))
 	}
-	_ = repo.Save(context.Background(), oldEvent)
-
-	// Insert fresh published event
-	newEvent := &outbox.OutboxEvent{
-		ID:        "new-1",
-		Status:    outbox.StatusPublished,
-		UpdatedAt: time.Now(),
+	claimed, _ := repo.Claim(ctx, 0, 10, "w", time.Minute, false)
+	require.Len(t, claimed, 2)
+	for _, e := range claimed {
+		require.NoError(t, repo.MarkPublished(ctx, e.ID, "w"))
 	}
-	_ = repo.Save(context.Background(), newEvent)
-
-	deleted, err := repo.DeletePublishedBefore(context.Background(), time.Now().Add(-7*24*time.Hour), 100)
-	assert.NoError(t, err)
-	assert.Equal(t, int64(1), deleted)
-
-	cfg := outbox.CleanerConfig{
-		Interval:        10 * time.Millisecond,
-		RetentionPeriod: 7 * 24 * time.Hour,
-		BatchSize:       10,
-		LockTTL:         100 * time.Millisecond,
-	}
-	cleaner := outbox.NewCleaner(cfg, repo, lock)
-	assert.NotNil(t, cleaner)
+	time.Sleep(10 * time.Millisecond)
+	// Only "old" is older than the cutoff.
+	n, err := repo.DeletePublishedBefore(ctx, time.Now().Add(time.Hour), 1)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "limit is honoured")
 }

@@ -165,3 +165,11 @@ func (e *Engine) executeJob(ctx context.Context, job Job) {
 		}
 	}
 }
+
+// Run starts the engine and blocks until ctx is cancelled, then stops it.
+func (e *Engine) Run(ctx context.Context) error {
+	e.Start(ctx)
+	<-ctx.Done()
+	e.Stop()
+	return nil
+}

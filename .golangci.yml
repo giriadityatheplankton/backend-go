@@ -1,0 +1,88 @@
+# golangci-lint v2 configuration.
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  build-tags: [examples, integration]
+
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+    - gosec          # includes G112 (missing ReadHeaderTimeout) and G402 (TLS config)
+    - bodyclose
+    - noctx
+    - contextcheck
+    - sqlclosecheck
+    - rowserrcheck
+    - errorlint
+    - depguard       # the Dependency Rule, enforced at lint time
+  settings:
+    errcheck:
+      exclude-functions:
+        - (*database/sql.DB).Close
+        - (*database/sql.Conn).Close
+    gosec:
+      excludes:
+        - G104  # covered by errcheck
+        - G404  # math/rand is used for jitter, never for secrets
+    depguard:
+      rules:
+        domain:
+          list-mode: lax
+          files: ["**/internal/modules/*/domain/**"]
+          deny:
+            - pkg: backend-go/internal/modules/*/usecase
+              desc: domain must not depend on use cases
+            - pkg: backend-go/internal/pkg
+              desc: domain must not depend on infrastructure
+            - pkg: github.com/gin-gonic/gin
+              desc: domain must not depend on a web framework
+            - pkg: database/sql
+              desc: domain must not touch the database
+            - pkg: google.golang.org/grpc
+              desc: domain must not depend on gRPC
+        usecase:
+          list-mode: lax
+          files: ["**/internal/modules/*/usecase/**", "!**/*_test.go"]
+          deny:
+            - pkg: backend-go/internal/pkg
+              desc: use cases talk to infrastructure only through ports
+            - pkg: backend-go/internal/modules/*/adapter
+              desc: use cases must not import adapters
+            - pkg: database/sql
+              desc: use ports.TxManager / ports.*Repository
+            - pkg: github.com/gin-gonic/gin
+              desc: no web types in use cases
+            - pkg: google.golang.org/grpc
+              desc: no gRPC types in use cases
+            - pkg: github.com/redis/go-redis
+              desc: no Redis types in use cases
+            - pkg: backend-go/gen
+              desc: generated transport types belong to adapters
+        platform:
+          list-mode: lax
+          files: ["**/internal/pkg/**", "!**/*_test.go"]
+          deny:
+            - pkg: backend-go/internal/modules
+              desc: pkg is domain-agnostic
+            - pkg: backend-go/internal/app
+              desc: pkg must not depend on the composition root
+            - pkg: backend-go/internal/config
+              desc: pass configuration values as parameters
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [gosec, errcheck, noctx, bodyclose, contextcheck]
+      - path: gen/
+        linters: [all]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

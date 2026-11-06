@@ -1,19 +1,28 @@
 # Go Backend Clean Architecture Template (Gin & gRPC)
 
-Production-grade Go backend architecture featuring Gin HTTP, gRPC delivery, transactional Outbox worker with distributed locking, idempotency engine, W3C distributed tracing, resilient rate limiting & circuit breakers, and multi-tenant read/write database routing.
+Production-grade Go backend architecture featuring Gin HTTP, gRPC delivery, transactional Outbox worker publishing to Redis Streams, three-layer idempotency engine, W3C distributed tracing, resilient rate limiting & circuit breakers, and multi-tenant read/write database routing.
 
 ## Project Structure
 
 ```plaintext
 backend-go/
 ├── cmd/
-│   └── api/
-│       ├── main.go                 # App entry point (DI & HTTP/gRPC server startup)
-│       └── pprof.go                # Isolated internal pprof diagnostic server (:6060)
+│   ├── api/main.go                 # HTTP/gRPC server entry point (wiring lives in internal/app)
+│   ├── worker/main.go              # Outbox relay, stream consumers, background jobs
+│   └── migrate/main.go             # Schema migrator
+├── api/
+│   └── proto/                      # Protobuf contracts (buf); sample services are optional
+├── gen/
+│   └── proto/                      # Generated Go code (do not edit)
 ├── deployments/
-│   ├── docker/                     # Multi-stage hardened Dockerfile
-│   └── k8s/                        # Kubernetes Deployment, Job, NetPol, HPA, PDB manifests
+│   ├── docker/                     # Multi-stage hardened multi-arch Dockerfile
+│   └── k8s/                        # Kustomize: base/ (Deployments, Job, NetPol, HPA, PDB) + overlays/
 ├── docs/
+│   ├── architecture.md                    # Layers, dependency rule, how to add a module
+│   ├── idempotency_guide.md               # Three-layer idempotency design
+│   ├── messaging_guide.md                 # Redis Streams producers/consumers, inbox, DLQ
+│   ├── proto_guide.md                     # buf workflow and gRPC conventions
+│   ├── review_resolution.md               # Status of every finding in review.md
 │   ├── infra_operations_guide.md          # Panduan deployment Kubernetes, observability, dan runbook
 │   ├── postgres_replication_guide.md      # Panduan PostgreSQL critical reads dan replication lag
 │   ├── redis_replication_guide.md         # Panduan Redis routing, critical reads, dan replication lag
@@ -23,32 +32,37 @@ backend-go/
 │   ├── reconciliation_guide.md              # Implementing and operating reconciliation jobs
 │   ├── configuration_management_migration_guide.md # Centralized Config (Consul/Vault/ESO) migration guide
 ├── internal/
-│   ├── config/                     # Configuration loader (.env & system environment)
-│   ├── domain/                     # Shared domain errors; sample domains are optional
-│   ├── events/                     # Message broker publishers (NATS / Kafka)
-│   ├── handler/
-│   │   ├── http/                   # REST API Delivery Layer (Gin controllers & routes)
-│   │   └── grpc/                   # gRPC Delivery Layer (Service server adapters)
-│   ├── pkg/
-│   │   ├── audit/                  # Immutable Audit Trail logging
-│   │   ├── cache/                  # Singleflight Stampede-Protected Cache Manager
-│   │   ├── database/               # Read/Write Splitting & Dynamic Multi-Tenant DB Router
-│   │   ├── health/                 # Non-blocking K8s Liveness & Readiness Probes
-│   │   ├── idempotency/            # Universal Idempotency Engine (HTTP & gRPC middleware)
-│   │   ├── metrics/                # Prometheus RED & Outbox/DB Pool Collector
-│   │   ├── middleware/             # Context Timeout, Security Headers, CORS, Recovery
-│   │   ├── outbox/                 # Transactional Outbox Worker, Distributed Lock, DLQ, Cleaner
-│   │   ├── reconciliation/         # Background Self-Healing & Transaction Reconciliation
-│   │   ├── resilience/             # Distributed Rate Limiting (Sliding Window) & Circuit Breaker
-│   │   ├── response/               # Standardized JSON response helpers
-│   │   ├── shutdown/               # Phased Graceful Shutdown Engine
-│   │   └── telemetry/              # W3C TraceContext propagator & slog TraceHandler
-│   ├── repository/                 # Data Access Layer with caching & DB persistence
-│   └── usecase/                    # Shared use-case infrastructure and optional examples
-├── proto/
-│   └── example_user/v1/example_user.proto # Optional sample Protobuf service
+│   ├── app/                        # Composition root (infra, HTTP, gRPC, workers, shutdown)
+│   ├── config/                     # Configuration loader and Validate()
+│   ├── kernel/                     # Shared error taxonomy (apperr), clock, ids
+│   ├── modules/
+│   │   └── <module>/               # One bounded context (samples: order, user; build tag `examples`)
+│   │       ├── domain/             # Entities, value objects, domain events, errors
+│   │       ├── usecase/            # Use cases; usecase/port holds the interfaces they need
+│   │       ├── adapter/inbound/    # http, grpc, consumer, job
+│   │       ├── adapter/outbound/   # postgres, redis (data access, caching)
+│   │       └── module.go
+│   └── pkg/
+│       ├── audit/                  # Immutable Audit Trail logging
+│       ├── auth/                   # Principal, JWT / static-token auth (HTTP & gRPC)
+│       ├── cache/                  # Singleflight Stampede-Protected Cache Manager
+│       ├── database/               # Read/Write Splitting, TxManager, Dynamic Multi-Tenant DB Router, migrate/
+│       ├── grpcclient/             # Outbound gRPC client (deadline, retry, breaker)
+│       ├── grpcserver/             # gRPC server (health, reflection, keepalive)
+│       ├── health/                 # Non-blocking K8s Liveness & Readiness Probes
+│       ├── httpserver/             # Router, server, middleware/ (Timeout, Security Headers, CORS, Recovery), respond/
+│       ├── idempotency/            # Universal Idempotency Engine (HTTP & gRPC middleware)
+│       ├── messaging/              # Publisher/Consumer contracts, redisstream/, inbox/
+│       ├── observability/          # metrics/ (Prometheus), telemetry/ (W3C TraceContext & slog TraceHandler)
+│       ├── outbox/                 # Transactional Outbox Worker, Distributed Lock, DLQ, Cleaner
+│       ├── reconciliation/         # Background Self-Healing & Transaction Reconciliation
+│       ├── redisclient/            # single / sentinel / cluster Redis client
+│       ├── resilience/             # Distributed Rate Limiting (Sliding Window) & Circuit Breaker
+│       └── shutdown/               # Phased Graceful Shutdown Engine
+├── migrations/                     # SQL per owner: platform/ and one folder per module
 ├── tests/
-│   └── integration/                # End-to-End Testcontainers tests (PostgreSQL + Redis)
+│   ├── arch/                       # Dependency Rule tests
+│   └── integration/                # End-to-End tests (PostgreSQL + Redis)
 ├── Makefile
 ├── go.mod
 └── README.md
@@ -66,83 +80,90 @@ for the full license text.
 
 ## Enterprise Modules & Features
 
-### 1. Advanced Outbox Worker & Distributed Locking (`internal/pkg/outbox`)
-- **Distributed Lock (`lock.go`)**: Multi-pod safe distributed locking using Redis `SET NX PX` and atomic Lua release/extension scripts.
-- **Partitioned Batching (`worker.go`)**: Multi-partition worker pool for high-throughput event processing.
-- **Dead Letter Queue (`DLQ`)**: Automatic routing to DLQ when event retry limit is reached with exponential backoff.
-- **Trace Context Propagation**: Preserves W3C `traceparent` from request headers to message broker payload headers.
-- **Persistence**: `memory_repository.go` provides the in-memory test adapter and `postgres_repository.go` provides PostgreSQL persistence backed by `database/sql`. The PostgreSQL repository can share the business transaction when saving events. See the [Outbox Package Guide](docs/outbox_guide.md) for setup and adding other database adapters.
+### 1. Advanced Outbox Worker & Redis Streams (`internal/pkg/outbox`, `internal/pkg/messaging`)
+- **Row Leasing (`worker.go`)**: Events are claimed in PostgreSQL with `FOR UPDATE SKIP LOCKED` and a lease, so multi-pod safety no longer depends on Redis. Expired leases are reclaimed after a crash.
+- **Distributed Lock (`lock.go`)**: Redis `SET NX PX` with atomic Lua release/extension, kept for singleton jobs (cleaner, reconciliation).
+- **Partitioned Batching (`worker.go`)**: Multi-partition worker pool for high-throughput event processing, with optional per-aggregate ordering.
+- **Dead Letter Queue (`DLQ`)**: Automatic routing to DLQ when event retry limit is reached with exponential backoff and jitter.
+- **Redis Streams (`messaging/redisstream`)**: Publisher plus consumer groups with `XAUTOCLAIM`, retries, a DLQ stream, and trimming. The `inbox` package de-duplicates messages on the consumer side.
+- **Trace Context Propagation**: Preserves W3C `traceparent` and `X-Request-ID` from request headers to message broker payload headers.
+- **Persistence**: `memory_repository.go` provides the in-memory test adapter and `postgres_repository.go` provides PostgreSQL persistence backed by `database/sql`. The PostgreSQL repository can share the business transaction when saving events. See the [Outbox Package Guide](docs/outbox_guide.md) and [Messaging Guide](docs/messaging_guide.md).
 
 ### 2. Idempotency Engine (`internal/pkg/idempotency`)
-- **HTTP Middleware (`HTTPMiddleware`)**: Intercepts requests with `X-Idempotency-Key` header, locks in-flight processing, caches response payloads, and replays completed responses on duplicate calls.
-- **gRPC Interceptor (`UnaryServerInterceptor`)**: Intercepts gRPC calls carrying `x-idempotency-key` metadata, preventing duplicate execution and replaying cached Protobuf/JSON responses.
+- **Three layers**: edge (Redis), database (`UNIQUE` key + fingerprint, source of truth), and consumer (inbox). See the [Idempotency Guide](docs/idempotency_guide.md).
+- **HTTP Middleware (`HTTPMiddleware`)**: Intercepts requests with the `Idempotency-Key` header (`X-Idempotency-Key` still accepted), scoped per authenticated principal, holds a fenced lease for in-flight processing, caches response payloads, and replays completed responses on duplicate calls.
+- **gRPC Interceptor (`UnaryServerInterceptor`)**: Intercepts gRPC calls carrying `idempotency-key` metadata, preventing duplicate execution and replaying the cached response with its correct Protobuf type.
 
-### 3. Distributed Tracing & Telemetry (`internal/pkg/telemetry`)
-- **W3C TraceContext Propagator (`trace.go`)**: Seamless context injection/extraction across HTTP headers, gRPC metadata, NATS/Kafka broker headers, and Go `context.Context`.
-- **Structured Logger Handler (`slog_handler.go`)**: Decorates `slog.Handler` to automatically attach `trace_id` and `span_id` to every structured log entry.
+### 3. Distributed Tracing & Telemetry (`internal/pkg/observability/telemetry`)
+- **W3C TraceContext Propagator (`trace.go`)**: Seamless context injection/extraction across HTTP headers, gRPC metadata, broker headers, and Go `context.Context`.
+- **Structured Logger Handler (`slog_handler.go`)**: Decorates `slog.Handler` to automatically attach `trace_id`, `span_id`, and `request_id` to every structured log entry.
 
 ### 4. Resiliency & Rate Limiting (`internal/pkg/resilience`)
-- **Distributed Sliding Window Rate Limiter (`ratelimit.go`)**: Enforces rate limits per-tenant (`X-Tenant-ID`), per-user (`X-User-ID`), or per-IP using Redis Sorted Sets and atomic Lua scripts.
-- **Circuit Breaker (`circuitbreaker.go`)**: Powered by `github.com/sony/gobreaker/v2` with state machine (`CLOSED`, `OPEN`, `HALF_OPEN`) protecting downstream HTTP and gRPC service integrations with automatic fallback execution.
+- **Distributed Sliding Window Rate Limiter (`ratelimit.go`)**: Enforces rate limits per authenticated principal (tenant/user) or per-IP using Redis Sorted Sets and atomic Lua scripts. Client-supplied `X-Tenant-ID` / `X-User-ID` headers are not trusted.
+- **Circuit Breaker (`circuitbreaker.go`)**: Powered by `github.com/sony/gobreaker/v2` with state machine (`CLOSED`, `OPEN`, `HALF_OPEN`) protecting the outbox publisher and downstream HTTP and gRPC service integrations with automatic fallback execution.
 - **gRPC Resiliency Interceptors (`grpc.go`)**: Native `UnaryServerRateLimitInterceptor` and `UnaryClientCircuitBreakerInterceptor`.
 
 ### 5. Database Optimization & Multi-Tenancy (`internal/pkg/database`)
-- **Read/Write Splitting (`DBGroup`)**: Menyediakan `Write()` untuk mutasi, `ReadPrimary()` untuk critical reads, dan `Read()` untuk query toleran-stale yang dibagi round-robin ke read replicas.
+- **Read/Write Splitting (`DBGroup`)**: Menyediakan `Write()` untuk mutasi, `ReadPrimary()` untuk critical reads, dan `Read()` untuk query toleran-stale yang dibagi round-robin ke read replicas yang sehat.
+- **Transactions (`tx.go`)**: `TxManager.WithinTx` with automatic retry of serialization failures and deadlocks.
 - **Critical Read Guidance**: Gunakan PostgreSQL primary untuk read-after-write dan keputusan critical; lewati cache Redis untuk data authoritative. Lihat [Panduan PostgreSQL Replication Lag](docs/postgres_replication_guide.md) dan [Panduan Redis Replication Lag](docs/redis_replication_guide.md) untuk panduan spesifik masing-masing datastore.
-- **Optional examples**: sample user/order handlers, workflows, migrations, and guides are excluded from the default build. Run with `make run-examples`, test with `make test-examples`, or remove all files named as examples in one step with `make remove-examples`.
-- **Dynamic Tenant Router (`DynamicTenantRouter`)**: Resolves tenant-specific database connection pools dynamically based on `TenantID` in context.
-- **Embedded Migration Engine (`internal/pkg/database/migration`)**: Programmatic DDL execution using `go:embed` SQL files with transaction safety and version tracking (`schema_migrations`).
+- **Optional examples**: sample user/order modules, workflows, migrations, and guides are excluded from the default build. Run with `make run-examples`, test with `make test-examples`, or remove all example code in one step with `make remove-examples`.
+- **Dynamic Tenant Router (`DynamicTenantRouter`)**: Resolves tenant-specific database connection pools dynamically based on `TenantID` in context. Unknown tenants return an error unless the default fallback is enabled explicitly.
+- **Embedded Migration Engine (`internal/pkg/database/migrate`, `migrations/`)**: Programmatic DDL execution using `go:embed` SQL files with transaction safety, advisory locking, checksums, and version tracking (`schema_history`).
 
 ### 6. Kubernetes Probes, Observability & Graceful Shutdown
-- **Health Probes (`internal/pkg/health`)**: Non-blocking asynchronous checks for Primary/Replica DB, Redis, and NATS at `/healthz/live` and `/healthz/ready`.
-- **Prometheus Metrics (`internal/pkg/metrics`)**: Exposes HTTP/gRPC RED metrics, outbox queue metrics, and DB connection pool stats at `/metrics`.
+- **Health Probes (`internal/pkg/health`)**: Non-blocking asynchronous checks for Primary/Replica DB and Redis at `/healthz/live` and `/healthz/ready` on the admin port (`:9090`). Replica and cache failures are reported as degraded, not unready.
+- **Prometheus Metrics (`internal/pkg/observability/metrics`)**: Exposes HTTP/gRPC RED metrics, idempotency, outbox, consumer, circuit breaker, and DB connection pool stats at `/metrics` on the admin port.
 - **Phased Graceful Shutdown (`internal/pkg/shutdown`)**: Multi-phase termination handling SIGTERM/SIGINT (Readiness flip -> Ingress drain -> Listener shutdown -> Worker drain -> Client cleanup).
-- **Context Deadlines & Timeouts (`internal/pkg/middleware/timeout.go`)**: Global request timeout injection with downstream deadline propagation.
-- **Go Runtime & Concurrency Hardening**: `automaxprocs` integration for Kubernetes CPU quota alignment and isolated internal diagnostic server (`cmd/api/pprof.go` on `:6060`).
+- **Context Deadlines & Timeouts (`internal/pkg/httpserver/middleware/timeout.go`)**: Global request timeout injection with downstream deadline propagation.
+- **Go Runtime & Concurrency Hardening**: `automaxprocs` integration for Kubernetes CPU quota alignment and pprof served only from the admin server when `PPROF_ENABLED=true`.
 
 ### 7. Security, Auditing & Panic Recovery
-- **Panic Recovery Middleware (`internal/pkg/middleware/recovery.go`)**: Recovers runtime panics across Gin and gRPC with structured JSON logs preserving contextual trace identifiers.
-- **Security Headers & Strict CORS (`internal/pkg/middleware/security.go`)**: OWASP-aligned response headers (`X-Frame-Options`, `X-Content-Type-Options`, `HSTS`, `CSP`) and fine-grained CORS.
+- **Panic Recovery Middleware (`internal/pkg/httpserver/middleware/recovery.go`)**: Recovers runtime panics across Gin and gRPC with structured JSON logs preserving contextual trace identifiers; panic details are never returned to clients.
+- **Security Headers & Strict CORS (`internal/pkg/httpserver/middleware/security.go`)**: OWASP-aligned response headers (`X-Frame-Options`, `X-Content-Type-Options`, `HSTS`, `CSP`) and deny-by-default CORS.
+- **Authentication (`internal/pkg/auth`)**: JWT or static-token auth that places a `Principal` in the context for HTTP and gRPC.
 - **Audit Trail (`internal/pkg/audit`)**: Catat aksi penting ke structured log saja atau simpan secara persisten di PostgreSQL; gunakan transaksi yang sama dengan perubahan bisnis jika audit wajib atomik. Lihat [Panduan Paket Audit](docs/audit_guide.md).
 - **Outbox Retention Cleaner (`internal/pkg/outbox/cleaner.go`)**: Distributed locked background worker that purges processed records to prevent table bloat.
 
 ### 8. High Performance & Testability Patterns
 - **Singleflight Cache Stampede Protection (`internal/pkg/cache`)**: Utilizes `golang.org/x/sync/singleflight` to suppress redundant database queries during concurrent cache misses on high-traffic keys.
 - **Self-Healing Reconciliation Engine (`internal/pkg/reconciliation`)**: Background distributed-locked reconciliation daemon to resolve stuck/pending transactions with external providers. See the [Reconciliation Guide](docs/reconciliation_guide.md) for implementing and registering jobs.
-- **Integration Testing with Testcontainers (`tests/integration`)**: Automated Docker-based integration tests verifying PostgreSQL, Redis, DDL migrations, and Outbox locking end-to-end (`make test-integration`).
+- **Architecture Tests (`tests/arch`)**: Fail the build when a layer imports outward (for example a use case importing `database/sql`).
+- **Integration Testing (`tests/integration`)**: Automated integration tests verifying PostgreSQL, Redis, DDL migrations, Outbox claiming, and the end-to-end HTTP/gRPC flow (`make test-integration`).
 
 ---
 
 ## Deployment & Kubernetes Manifests
 
 Ready-to-use production assets located under `deployments/`:
-- **Docker (`deployments/docker/Dockerfile`)**: Multi-stage build with Go module caching, non-root user `appuser:10001`, and minimal runtime image.
-- **Kubernetes (`deployments/k8s/`)**:
-  - `deployment.yaml`: Zero-downtime rolling update, security context, liveness/readiness/startup probes, and `preStop` hook.
+- **Docker (`deployments/docker/Dockerfile`)**: Multi-stage multi-arch build with Go module caching, distroless non-root runtime, and the `api`, `worker`, and `migrate` binaries.
+- **Kubernetes (`deployments/k8s/`)**: Kustomize `base/` plus `overlays/{dev,staging,prod}` (`make k8s-render ENV=prod`):
+  - `api-deployment.yaml` / `worker-deployment.yaml`: Zero-downtime rolling update, security context, liveness/readiness/startup probes, and `preStop` hook.
   - `job-migration.yaml`: Pre-deployment DDL database migration Job.
   - `networkpolicy.yaml`: Microsegmentation restricting ingress/egress network traffic.
-  - `hpa.yaml`: Horizontal Pod Autoscaler targeting CPU (70%), Memory (80%), and Prometheus metrics.
+  - `hpa.yaml`: Horizontal Pod Autoscaler targeting CPU (70%) and Memory (80%).
   - `pdb.yaml`: Pod Disruption Budget guaranteeing minimum pod availability.
   - `service.yaml` & `configmap.yaml`: Networking and environment configurations.
 
 ---
 
-## Handler Layer Organization
+## Module Organization
 
-- **HTTP Handlers (`internal/handler/http`)**:
-  - Contains HTTP delivery middleware; sample routes are opt-in with the `examples` build tag.
-- **gRPC Handlers (`internal/handler/grpc`)**:
-  - Contains gRPC server infrastructure; sample handlers are opt-in with the `examples` build tag.
+- **HTTP adapters (`internal/modules/<module>/adapter/inbound/http`)**:
+  - Contains Gin controllers and routes; sample routes are opt-in with the `examples` build tag.
+- **gRPC adapters (`internal/modules/<module>/adapter/inbound/grpc`)**:
+  - Contains gRPC service implementations; sample handlers are opt-in with the `examples` build tag.
+- **Server infrastructure** lives in `internal/pkg/httpserver` and `internal/pkg/grpcserver`.
 
 ---
 
 ## Configuration
 
-Configuration values are dynamically loaded from environment-specific files based on `APP_ENV` (`.env.development` or `.env.production`), falling back to `.env` and system environment variables.
+Configuration values are loaded from environment-specific files based on `APP_ENV` (`.env.development`), falling back to `.env` and system environment variables. In production `.env` files are ignored; use real environment variables. Invalid values stop startup instead of silently using defaults.
 
 ### Environment Files:
 - **`.env.development`**: Configured for local debugging with verbose `LOG_LEVEL=debug`, relaxed timeouts (`60s`) for IDE breakpoint inspection, local addresses, and lightweight Outbox concurrency.
-- **`.env.production`**: Hardened for production with `LOG_LEVEL=info`, strict timeouts (`10s`), high-throughput Outbox worker partitioning, and tight rate limits.
+- **`.env.production.example`**: Production template with `LOG_LEVEL=info`, strict timeouts, high-throughput Outbox worker partitioning, and tight rate limits. Do not commit real secrets.
 - **`.env.example`**: Comprehensive reference listing all available configuration variables.
 
 ### Available Variables:
@@ -153,22 +174,27 @@ Configuration values are dynamically loaded from environment-specific files base
 | `LOG_LEVEL` | Structured log severity (`debug`, `info`, `warn`, `error`). | `debug` | `info` |
 | `SERVER_ADDRESS` | HTTP server host and port. | `127.0.0.1:8080` | `:8080` |
 | `GRPC_ADDRESS` | gRPC server host and port. | `127.0.0.1:50051` | `:50051` |
-| `PPROF_ADDRESS` | Isolated diagnostic pprof server address. | `127.0.0.1:6060` | `127.0.0.1:6060` |
+| `ADMIN_ADDRESS` | Probes, `/metrics`, and pprof server address. | `127.0.0.1:9090` | `:9090` (cluster-internal) |
+| `PPROF_ENABLED` | Serve pprof on the admin server. | `true` | `false` |
 | `READ_TIMEOUT` | HTTP server read timeout. | `60s` | `10s` |
-| `WRITE_TIMEOUT` | HTTP server write timeout. | `60s` | `10s` |
+| `WRITE_TIMEOUT` | HTTP server write timeout. | `60s` | `15s` |
 | `SHUTDOWN_TIMEOUT` | Graceful shutdown timeout before forced kill. | `5s` | `15s` |
+| `AUTH_MODE` | `none` (dev only), `static`, or `jwt`. | `static` | `jwt` |
 | `DB_PRIMARY_DSN` | Primary PostgreSQL connection string (Write). | `postgres://.../appdb_dev` | `postgres://.../appdb` |
-| `DB_REPLICA_DSN` | Read-replica PostgreSQL connection string (Read). | `postgres://.../appdb_dev` | `postgres://.../appdb` |
-| `DB_MAX_OPEN_CONNS`| Max open connections in DB pool. | `10` | `50` |
-| `DB_MAX_IDLE_CONNS`| Max idle connections in DB pool. | `5` | `20` |
-| `DB_CONN_MAX_LIFETIME`| Max connection lifetime in pool. | `10m` | `15m` |
-| `REDIS_ADDRESS` | Redis host and port for lock & caching. | `127.0.0.1:6379` | `redis-cluster:6379` |
+| `DB_REPLICA_DSNS` | Comma-separated read-replica connection strings (Read). | empty | `postgres://.../appdb` |
+| `DB_MAX_OPEN_CONNS`| Max open connections in DB pool. | `10` | `20` |
+| `DB_MAX_IDLE_CONNS`| Max idle connections in DB pool. | `5` | `10` |
+| `DB_CONN_MAX_LIFETIME`| Max connection lifetime in pool. | `30m` | `30m` |
+| `REDIS_MODE` | Redis mode (`single` / `sentinel` / `cluster`). | `single` | `cluster` |
+| `REDIS_ADDRESSES` | Redis host and port list for idempotency, locks, and streams. | `127.0.0.1:6379` | `redis-cluster:6379` |
+| `REDIS_CACHE_ADDRESSES` | Optional separate Redis for caching. | unset | separate instance |
 | `CACHE_TTL` | Entity caching duration. | `1m` | `15m` |
-| `NATS_ADDRESS` | Message broker address. | `nats://127.0.0.1:4222` | `nats://nats-cluster:4222` |
+| `STREAM_PREFIX` | Redis Streams namespace. | empty | service name |
 | `OUTBOX_PARTITIONS`| Outbox processing partition count. | `2` | `16` |
 | `OUTBOX_BATCH_SIZE`| Batch fetch size per partition. | `20` | `200` |
 | `OUTBOX_POLL_INTERVAL`| Polling interval for pending events. | `500ms` | `100ms` |
 | `IDEMPOTENCY_TTL` | Deduplication response cache duration. | `10m` | `24h` |
+| `IDEMPOTENCY_FAILURE_MODE` | Behavior when Redis is down (`closed` / `open`). | `closed` | `closed` |
 | `RATE_LIMIT_REQUESTS`| Sliding-window rate limit request count. | `1000` | `100` |
 | `RATE_LIMIT_WINDOW`| Sliding-window duration. | `1m` | `1m` |
 
@@ -178,17 +204,21 @@ Configuration values are dynamically loaded from environment-specific files base
 
 ### 1. Run the Server Locally (Development / Debug Mode)
 ```bash
-APP_ENV=development go run ./cmd/api
+docker compose up -d postgres redis
+make migrate
+make run
 ```
-The server will run on `http://127.0.0.1:8080` with pprof at `http://127.0.0.1:6060/debug/pprof/`.
+The server will run on `http://127.0.0.1:8080` with probes, metrics, and pprof at `http://127.0.0.1:9090`.
 
 ### 2. Run the Server in Production Mode
 ```bash
 APP_ENV=production go run ./cmd/api
+APP_ENV=production go run ./cmd/worker
 ```
 
 ### 3. Run the Optional Examples
 ```bash
+make migrate TAGS=examples
 make run-examples
 ```
 The examples use the Go `examples` build tag and are not part of the default
@@ -198,9 +228,9 @@ migrations, and example-only guides from a fork.
 ### 4. Run Unit & Integration Tests
 ```bash
 # Run unit tests
-go test -v -cover ./...
+make test
 
-# Run Testcontainers integration tests (requires Docker)
+# Run integration tests (set TEST_POSTGRES_DSN and TEST_REDIS_ADDR, or use a Docker-compatible runtime)
 make test-integration
 ```
 
@@ -209,7 +239,8 @@ make test-integration
 go build -o bin/api ./cmd/api
 ./bin/api
 
-# Build the schema migrator used by deployments/k8s/job-migration.yaml
+# Build the worker and the schema migrator used by deployments/k8s/base/job-migration.yaml
+go build -o bin/worker ./cmd/worker
 go build -o bin/migrate ./cmd/migrate
 ```
 
@@ -234,6 +265,6 @@ NEW_MODULE="my-new-project"
 mkdir -p "$NEW_PATH"
 rsync -av --exclude='bin' --exclude='.git' ./ "$NEW_PATH"/
 perl -pi -e "s|module backend-go|module $NEW_MODULE|g" "$NEW_PATH/go.mod"
-find "$NEW_PATH" -type f \( -name "*.go" -o -name "*.proto" -o -name "*.yaml" -o -name "*.yml" -o -name "Makefile" -o -name "Dockerfile" \) -exec perl -pi -e "s|backend-go|$NEW_MODULE|g" {} +
+find "$NEW_PATH" -type f \( -name "*.go" -o -name "*.proto" -o -name "*.yaml" -o -name "*.yml" -o -name "Makefile" -o -name "Dockerfile" \) -not -path '*/gen/*' -exec perl -pi -e "s|backend-go|$NEW_MODULE|g" {} +
 cd "$NEW_PATH" && go mod tidy && go test ./...
 ```

@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
+
+	"backend-go/internal/pkg/observability/requestid"
+	"backend-go/internal/pkg/observability/telemetry"
 )
 
 // SQLExecutor is implemented by *sql.DB and *sql.Tx.
@@ -18,7 +20,8 @@ type SQLExecutor interface {
 }
 
 // PostgresRepository persists outbox events and DLQ records in PostgreSQL.
-// Pass a *sql.Tx to NewPostgresRepository when Save must share the business transaction.
+// For Save, pass the business transaction (or use database.Executor(ctx, db)) so
+// the event commits atomically with the state change.
 type PostgresRepository struct {
 	db SQLExecutor
 }
@@ -28,6 +31,30 @@ func NewPostgresRepository(db SQLExecutor) *PostgresRepository {
 	return &PostgresRepository{db: db}
 }
 
+var _ Repository = (*PostgresRepository)(nil)
+
+func (p *PostgresRepository) checkDB() error {
+	if p == nil || p.db == nil {
+		return errors.New("outbox PostgreSQL repository has no database executor")
+	}
+	return nil
+}
+
+// Enrich copies request and trace correlation from ctx into event headers.
+func Enrich(ctx context.Context, ev *OutboxEvent) {
+	if ev.Headers == nil {
+		ev.Headers = map[string]string{}
+	}
+	if id := requestid.From(ctx); id != "" {
+		if _, ok := ev.Headers[requestid.Header]; !ok {
+			ev.Headers[requestid.Header] = id
+		}
+	}
+	if _, ok := ev.Headers[telemetry.HeaderTraceParent]; !ok {
+		telemetry.InjectMap(ctx, ev.Headers)
+	}
+}
+
 func (p *PostgresRepository) Save(ctx context.Context, event *OutboxEvent) error {
 	if err := p.checkDB(); err != nil {
 		return err
@@ -35,6 +62,7 @@ func (p *PostgresRepository) Save(ctx context.Context, event *OutboxEvent) error
 	if event == nil || event.ID == "" {
 		return errors.New("outbox event and event ID are required")
 	}
+	Enrich(ctx, event)
 
 	now := time.Now().UTC()
 	status := event.Status
@@ -49,10 +77,6 @@ func (p *PostgresRepository) Save(ctx context.Context, event *OutboxEvent) error
 	if createdAt.IsZero() {
 		createdAt = now
 	}
-	updatedAt := event.UpdatedAt
-	if updatedAt.IsZero() {
-		updatedAt = now
-	}
 	maxRetries := event.MaxRetries
 	if maxRetries <= 0 {
 		maxRetries = 5
@@ -61,42 +85,19 @@ func (p *PostgresRepository) Save(ctx context.Context, event *OutboxEvent) error
 	if payload == nil {
 		payload = []byte{}
 	}
-	headers := event.Headers
-	if headers == nil {
-		headers = map[string]string{}
-	}
-	encodedHeaders, err := json.Marshal(headers)
+	headers, err := json.Marshal(event.Headers)
 	if err != nil {
 		return fmt.Errorf("marshal outbox headers: %w", err)
-	}
-	var lastError any
-	if event.LastError != "" {
-		lastError = event.LastError
 	}
 
 	_, err = p.db.ExecContext(ctx, `
 		INSERT INTO outbox_events (
 			id, aggregate_type, aggregate_id, event_type, payload, headers,
-			partition, status, retry_count, max_retries, next_retry_at,
-			last_error, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14)
-		ON CONFLICT (id) DO UPDATE SET
-			aggregate_type = EXCLUDED.aggregate_type,
-			aggregate_id = EXCLUDED.aggregate_id,
-			event_type = EXCLUDED.event_type,
-			payload = EXCLUDED.payload,
-			headers = EXCLUDED.headers,
-			partition = EXCLUDED.partition,
-			status = EXCLUDED.status,
-			retry_count = EXCLUDED.retry_count,
-			max_retries = EXCLUDED.max_retries,
-			next_retry_at = EXCLUDED.next_retry_at,
-			last_error = EXCLUDED.last_error,
-			created_at = EXCLUDED.created_at,
-			updated_at = EXCLUDED.updated_at`,
+			partition, status, retry_count, max_retries, next_retry_at, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,0,$9,$10,$11,$11)
+		ON CONFLICT (id) DO NOTHING`,
 		event.ID, event.AggregateType, event.AggregateID, event.EventType,
-		payload, string(encodedHeaders), event.Partition, status, event.RetryCount,
-		maxRetries, nextRetryAt, lastError, createdAt, updatedAt,
+		payload, string(headers), event.Partition, status, maxRetries, nextRetryAt, createdAt,
 	)
 	if err != nil {
 		return fmt.Errorf("save outbox event %q: %w", event.ID, err)
@@ -104,227 +105,171 @@ func (p *PostgresRepository) Save(ctx context.Context, event *OutboxEvent) error
 	return nil
 }
 
-func (p *PostgresRepository) FetchPendingBatch(ctx context.Context, partition int, limit int) (events []*OutboxEvent, retErr error) {
+const claimQuery = `
+WITH claimable AS (
+	SELECT o.id FROM outbox_events o
+	WHERE o.partition = $1
+	  AND (
+	        (o.status IN ('PENDING','FAILED') AND o.next_retry_at <= now())
+	     OR (o.status = 'PROCESSING' AND o.locked_until < now())
+	  )
+	  AND ($5::boolean = FALSE OR NOT EXISTS (
+	        SELECT 1 FROM outbox_events prev
+	        WHERE prev.aggregate_id = o.aggregate_id
+	          AND prev.partition = o.partition
+	          AND prev.id <> o.id
+	          AND prev.status IN ('PENDING','FAILED','PROCESSING')
+	          AND (prev.created_at, prev.id) < (o.created_at, o.id)))
+	ORDER BY o.created_at, o.id
+	LIMIT $2
+	FOR UPDATE SKIP LOCKED
+)
+UPDATE outbox_events e
+SET status = 'PROCESSING', locked_by = $3,
+    locked_until = now() + make_interval(secs => $4), updated_at = now()
+FROM claimable c WHERE e.id = c.id
+RETURNING e.id, e.aggregate_type, e.aggregate_id, e.event_type, e.payload, e.headers,
+          e.partition, e.status, e.retry_count, e.max_retries, e.next_retry_at,
+          e.last_error, e.created_at, e.updated_at`
+
+func (p *PostgresRepository) Claim(ctx context.Context, partition, limit int, owner string, leaseFor time.Duration, preserveOrder bool) (events []*OutboxEvent, retErr error) {
 	if err := p.checkDB(); err != nil {
 		return nil, err
 	}
 	if limit <= 0 {
-		return []*OutboxEvent{}, nil
+		return nil, nil
 	}
-
-	rows, err := p.db.QueryContext(ctx, `
-		SELECT id, aggregate_type, aggregate_id, event_type, payload, headers,
-			partition, status, retry_count, max_retries, next_retry_at,
-			last_error, created_at, updated_at
-		FROM outbox_events
-		WHERE partition = $1
-			AND (status = $2 OR (status = $3 AND next_retry_at <= CURRENT_TIMESTAMP))
-		ORDER BY created_at, id
-		LIMIT $4`,
-		partition, StatusPending, StatusFailed, limit,
-	)
+	rows, err := p.db.QueryContext(ctx, claimQuery, partition, limit, owner, leaseFor.Seconds(), preserveOrder)
 	if err != nil {
-		return nil, fmt.Errorf("fetch pending outbox events for partition %d: %w", partition, err)
+		return nil, fmt.Errorf("claim outbox events for partition %d: %w", partition, err)
 	}
 	defer func() {
 		if closeErr := rows.Close(); closeErr != nil {
-			retErr = errors.Join(retErr, fmt.Errorf("close pending outbox event rows: %w", closeErr))
+			retErr = errors.Join(retErr, fmt.Errorf("close claimed outbox rows: %w", closeErr))
 		}
 	}()
-
-	events = make([]*OutboxEvent, 0)
 	for rows.Next() {
-		event := new(OutboxEvent)
+		ev := new(OutboxEvent)
 		var headers []byte
 		var lastError sql.NullString
-		if err := rows.Scan(
-			&event.ID, &event.AggregateType, &event.AggregateID, &event.EventType,
-			&event.Payload, &headers, &event.Partition, &event.Status,
-			&event.RetryCount, &event.MaxRetries, &event.NextRetryAt,
-			&lastError, &event.CreatedAt, &event.UpdatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan pending outbox event: %w", err)
+		if err := rows.Scan(&ev.ID, &ev.AggregateType, &ev.AggregateID, &ev.EventType, &ev.Payload, &headers,
+			&ev.Partition, &ev.Status, &ev.RetryCount, &ev.MaxRetries, &ev.NextRetryAt,
+			&lastError, &ev.CreatedAt, &ev.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan claimed outbox event: %w", err)
 		}
-		if err := json.Unmarshal(headers, &event.Headers); err != nil {
-			return nil, fmt.Errorf("decode headers for outbox event %q: %w", event.ID, err)
+		if err := json.Unmarshal(headers, &ev.Headers); err != nil {
+			return nil, fmt.Errorf("decode headers for outbox event %q: %w", ev.ID, err)
 		}
-		event.LastError = lastError.String
-		events = append(events, event)
+		ev.LastError = lastError.String
+		ev.LockedBy = owner
+		events = append(events, ev)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate pending outbox events: %w", err)
+		return nil, fmt.Errorf("iterate claimed outbox events: %w", err)
 	}
 	return events, nil
 }
 
-func (p *PostgresRepository) MarkProcessing(ctx context.Context, ids []string) error {
-	if err := p.checkDB(); err != nil {
+func (p *PostgresRepository) ExtendLease(ctx context.Context, owner string, ids []string, leaseFor time.Duration) error {
+	if err := p.checkDB(); err != nil || len(ids) == 0 {
 		return err
 	}
-	if len(ids) == 0 {
-		return nil
-	}
-
-	args := make([]any, 0, len(ids)+1)
-	args = append(args, StatusProcessing)
-	placeholders := make([]string, len(ids))
-	for i, id := range ids {
-		args = append(args, id)
-		placeholders[i] = fmt.Sprintf("$%d", i+2)
-	}
-
 	_, err := p.db.ExecContext(ctx, `
-		UPDATE outbox_events
-		SET status = $1, updated_at = CURRENT_TIMESTAMP
-		WHERE id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+		UPDATE outbox_events SET locked_until = now() + make_interval(secs => $3)
+		WHERE locked_by = $1 AND status = 'PROCESSING' AND id = ANY($2::text[])`,
+		owner, ids, leaseFor.Seconds())
 	if err != nil {
-		return fmt.Errorf("mark outbox events processing: %w", err)
+		return fmt.Errorf("extend outbox lease: %w", err)
 	}
 	return nil
 }
 
-func (p *PostgresRepository) MarkPublished(ctx context.Context, id string) error {
-	if err := p.checkDB(); err != nil {
+func (p *PostgresRepository) ReleaseLease(ctx context.Context, owner string, ids []string) error {
+	if err := p.checkDB(); err != nil || len(ids) == 0 {
 		return err
 	}
 	_, err := p.db.ExecContext(ctx, `
-		UPDATE outbox_events
-		SET status = $1, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $2`, StatusPublished, id)
+		UPDATE outbox_events SET status = 'PENDING', locked_by = NULL, locked_until = NULL, updated_at = now()
+		WHERE locked_by = $1 AND status = 'PROCESSING' AND id = ANY($2::text[])`, owner, ids)
 	if err != nil {
-		return fmt.Errorf("mark outbox event %q published: %w", id, err)
+		return fmt.Errorf("release outbox lease: %w", err)
 	}
 	return nil
 }
 
-func (p *PostgresRepository) MarkFailed(ctx context.Context, id string, errStr string, nextRetry time.Time) error {
+func (p *PostgresRepository) fenced(ctx context.Context, what, id string, query string, args ...any) error {
 	if err := p.checkDB(); err != nil {
 		return err
 	}
-	_, err := p.db.ExecContext(ctx, `
-		UPDATE outbox_events
-		SET status = $1, retry_count = retry_count + 1, last_error = $2,
-			next_retry_at = $3, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $4`, StatusFailed, errStr, nextRetry, id)
+	res, err := p.db.ExecContext(ctx, query, args...)
 	if err != nil {
-		return fmt.Errorf("mark outbox event %q failed: %w", id, err)
+		return fmt.Errorf("%s outbox event %q: %w", what, id, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrLeaseLost
 	}
 	return nil
 }
 
-func (p *PostgresRepository) MoveToDLQ(ctx context.Context, id string, reason string) error {
-	if err := p.checkDB(); err != nil {
-		return err
-	}
+func (p *PostgresRepository) MarkPublished(ctx context.Context, id, owner string) error {
+	return p.fenced(ctx, "mark published", id, `
+		UPDATE outbox_events SET status = 'PUBLISHED', locked_by = NULL, locked_until = NULL, updated_at = now()
+		WHERE id = $1 AND locked_by = $2 AND status = 'PROCESSING'`, id, owner)
+}
 
-	// One statement ensures the source status change and DLQ insert succeed or fail together.
-	_, err := p.db.ExecContext(ctx, `
+func (p *PostgresRepository) MarkFailed(ctx context.Context, id, owner, errStr string, nextRetry time.Time) error {
+	return p.fenced(ctx, "mark failed", id, `
+		UPDATE outbox_events SET status = 'FAILED', retry_count = retry_count + 1, last_error = $3,
+			next_retry_at = $4, locked_by = NULL, locked_until = NULL, updated_at = now()
+		WHERE id = $1 AND locked_by = $2 AND status = 'PROCESSING'`, id, owner, errStr, nextRetry)
+}
+
+func (p *PostgresRepository) MoveToDLQ(ctx context.Context, id, owner, reason string) error {
+	// One statement: the status change and the DLQ insert succeed or fail together.
+	return p.fenced(ctx, "move to DLQ", id, `
 		WITH moved AS (
 			UPDATE outbox_events
-			SET status = $2, last_error = $3, updated_at = CURRENT_TIMESTAMP
-			WHERE id = $1
+			SET status = 'DLQ', last_error = $3, retry_count = retry_count + 1,
+			    locked_by = NULL, locked_until = NULL, updated_at = now()
+			WHERE id = $1 AND locked_by = $2 AND status = 'PROCESSING'
 			RETURNING id, event_type, payload, headers, retry_count
+		), ins AS (
+			INSERT INTO dlq_events (id, original_event_id, event_type, payload, headers, failure_reason, retry_attempts, failed_at)
+			SELECT 'dlq_' || id, id, event_type, payload, headers, $3, retry_count, now() FROM moved
+			ON CONFLICT (id) DO UPDATE SET failure_reason = EXCLUDED.failure_reason,
+				retry_attempts = EXCLUDED.retry_attempts, failed_at = EXCLUDED.failed_at
 		)
-		INSERT INTO dlq_events (
-			id, original_event_id, event_type, payload, headers,
-			failure_reason, retry_attempts, failed_at
-		)
-		SELECT 'dlq_' || id, id, event_type, payload, headers,
-			$3, retry_count, CURRENT_TIMESTAMP
-		FROM moved
-		ON CONFLICT (id) DO UPDATE SET
-			failure_reason = EXCLUDED.failure_reason,
-			retry_attempts = EXCLUDED.retry_attempts,
-			failed_at = EXCLUDED.failed_at`,
-		id, StatusDLQ, reason,
-	)
-	if err != nil {
-		return fmt.Errorf("move outbox event %q to DLQ: %w", id, err)
-	}
-	return nil
-}
-
-func (p *PostgresRepository) SaveDLQ(ctx context.Context, dlq *DLQEvent) error {
-	if err := p.checkDB(); err != nil {
-		return err
-	}
-	if dlq == nil || dlq.ID == "" {
-		return errors.New("DLQ event and event ID are required")
-	}
-	payload := dlq.Payload
-	if payload == nil {
-		payload = []byte{}
-	}
-	headers := dlq.Headers
-	if headers == nil {
-		headers = map[string]string{}
-	}
-	encodedHeaders, err := json.Marshal(headers)
-	if err != nil {
-		return fmt.Errorf("marshal DLQ headers: %w", err)
-	}
-	failedAt := dlq.FailedAt
-	if failedAt.IsZero() {
-		failedAt = time.Now().UTC()
-	}
-
-	_, err = p.db.ExecContext(ctx, `
-		INSERT INTO dlq_events (
-			id, original_event_id, event_type, payload, headers,
-			failure_reason, retry_attempts, failed_at
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
-		ON CONFLICT (id) DO UPDATE SET
-			original_event_id = EXCLUDED.original_event_id,
-			event_type = EXCLUDED.event_type,
-			payload = EXCLUDED.payload,
-			headers = EXCLUDED.headers,
-			failure_reason = EXCLUDED.failure_reason,
-			retry_attempts = EXCLUDED.retry_attempts,
-			failed_at = EXCLUDED.failed_at`,
-		dlq.ID, dlq.OriginalEventID, dlq.EventType, payload, string(encodedHeaders),
-		dlq.FailureReason, dlq.RetryAttempts, failedAt,
-	)
-	if err != nil {
-		return fmt.Errorf("save DLQ event %q: %w", dlq.ID, err)
-	}
-	return nil
+		SELECT 1 FROM moved`, id, owner, reason)
 }
 
 func (p *PostgresRepository) DeletePublishedBefore(ctx context.Context, before time.Time, limit int) (int64, error) {
 	if err := p.checkDB(); err != nil {
 		return 0, err
 	}
-
-	query := `
-		WITH expired AS (
-			SELECT id FROM outbox_events
-			WHERE status = $1 AND updated_at < $2
-			ORDER BY updated_at, id`
-	args := []any{StatusPublished, before}
-	if limit > 0 {
-		query += ` LIMIT $3`
-		args = append(args, limit)
+	if limit <= 0 {
+		limit = 1000
 	}
-	query += `
-		)
-		DELETE FROM outbox_events AS events
-		USING expired
-		WHERE events.id = expired.id`
-
-	result, err := p.db.ExecContext(ctx, query, args...)
+	res, err := p.db.ExecContext(ctx, `
+		DELETE FROM outbox_events WHERE id IN (
+			SELECT id FROM outbox_events WHERE status = 'PUBLISHED' AND updated_at < $1
+			ORDER BY updated_at LIMIT $2 FOR UPDATE SKIP LOCKED)`, before, limit)
 	if err != nil {
 		return 0, fmt.Errorf("delete published outbox events before %s: %w", before, err)
 	}
-	deleted, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("count deleted published outbox events: %w", err)
-	}
-	return deleted, nil
+	return res.RowsAffected()
 }
 
-func (p *PostgresRepository) checkDB() error {
-	if p == nil || p.db == nil {
-		return errors.New("outbox PostgreSQL repository has no database executor")
+func (p *PostgresRepository) Stats(ctx context.Context) (Stats, error) {
+	if err := p.checkDB(); err != nil {
+		return Stats{}, err
 	}
-	return nil
+	var count int64
+	var ageSec float64
+	err := p.db.QueryRowContext(ctx, `
+		SELECT count(*), COALESCE(EXTRACT(EPOCH FROM now() - min(created_at)), 0)
+		FROM outbox_events WHERE status IN ('PENDING','FAILED','PROCESSING')`).Scan(&count, &ageSec)
+	if err != nil {
+		return Stats{}, fmt.Errorf("outbox stats: %w", err)
+	}
+	return Stats{Unpublished: count, OldestPendingAge: time.Duration(ageSec * float64(time.Second))}, nil
 }
